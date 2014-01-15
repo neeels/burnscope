@@ -183,12 +183,13 @@ int main(int argc, char *argv[])
   int frame_period = 70;
   bool usage = false;
   bool error = false;
+  bool asymmetrical = false;
   bool wrap_borders = true;
 
   int c;
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:u:bh");
+    c = getopt(argc, argv, "a:g:m:p:u:Abh");
     if (c == -1)
       break;
    
@@ -233,6 +234,10 @@ int main(int argc, char *argv[])
         wrap_borders = false;
         break;
 
+      case 'A':
+        asymmetrical = true;
+        break;
+
       case '?':
         error = true;
       case 'h':
@@ -273,6 +278,7 @@ int main(int argc, char *argv[])
 "  -u N.n  Set underdampening factor (decimal). Default is %.3f.\n"
 "          Reduces normal blur dampening by this factor.\n"
 "  -b      Assume zeros around borders. Default is to wrap around borders.\n"
+"  -A      Asymmetrical seeding only.\n"
 , apex_r, underdampen
 );
     if (error)
@@ -363,19 +369,30 @@ int main(int argc, char *argv[])
     val.rgb[rgb] = 128;
     int i, j;
     bool xs, ys;
-    xs = ys = true;
-    switch((sym + rgb) & 3) {
-      case 1:
-        xs = false;
-        break;
-      case 2:
-        ys = false;
-      default:
-        break;
+    if (asymmetrical)
+      xs = ys = false;
+    else {
+      xs = ys = true;
+      switch((sym + rgb) & 3) {
+        case 1:
+          xs = false;
+          break;
+        case 2:
+          ys = false;
+        default:
+          break;
+      }
     }
-    printf("%d: %d %d\n", rgb, xs, ys);
+    printf("%c: %s\n", "rgb"[rgb],
+           (xs? (ys? "point-symmetrical about center" : "x-symmetrical (about vertical axis)")
+              : (ys? "y-symmetrical (about horizontal axis)" : "asymmetrical"))
+              );
 
-    j = (float)(W * H / 10) * (0.5 + 0.5 * ((float)random() / RAND_MAX));
+    j = W * H / 10;
+    if (! xs)
+      j *= 2;
+    if (! ys)
+      j *= 2;
     for (i = 0; i < j; i ++) {
       seed(pixbuf, W, H, random() % W, random() % H, &val, xs, ys);
     }

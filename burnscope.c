@@ -335,12 +335,13 @@ int main(int argc, char *argv[])
   int frame_period = 70;
   bool usage = false;
   bool error = false;
+  bool asymmetrical = false;
   bool wrap_borders = true;
 
   int c;
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:u:bh");
+    c = getopt(argc, argv, "a:g:m:p:u:Abh");
     if (c == -1)
       break;
    
@@ -383,6 +384,10 @@ int main(int argc, char *argv[])
 
       case 'b':
         wrap_borders = false;
+        break;
+
+      case 'A':
+        asymmetrical = true;
         break;
 
       case '?':
@@ -531,19 +536,30 @@ int main(int argc, char *argv[])
   { 
     int i, j;
     bool xs, ys;
-    xs = ys = true;
-    j = random() & 3;
-    switch(j) {
-      case 1:
-        xs = false;
-        break;
-      case 2:
-        ys = false;
-      default:
-        break;
+    if (asymmetrical)
+      xs = ys = false;
+    else {
+      xs = ys = true;
+      j = random() & 3;
+      switch(j) {
+        case 1:
+          xs = false;
+          break;
+        case 2:
+          ys = false;
+        default:
+          break;
+      }
     }
-    printf(" %d %d\n", xs, ys);
-    j = (float)(W * H / 5) * (0.5 + 0.5 * ((float)random() / RAND_MAX));
+    printf("%s\n",
+           (xs? (ys? "point-symmetrical about center" : "x-symmetrical (about vertical axis)")
+              : (ys? "y-symmetrical (about horizontal axis)" : "asymmetrical"))
+              );
+    j = W * H / 5;
+    if (! xs)
+      j *= 2;
+    if (! ys)
+      j *= 2;
     for (i = 0; i < j; i ++) {
       seed(pixbuf, W, H, random() % W, random() % H, 70, xs, ys);
     }
