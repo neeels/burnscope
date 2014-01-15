@@ -1,3 +1,10 @@
+/* burnscope3.c
+ * (c) 2014 Neels Hofmeyr <neels@hofmeyr.de>
+ *
+ * This file is part of burnscope, published under the GNU General Public
+ * License v3.
+ */
+
 #include <math.h>
 #include <stdlib.h>
 #include <SDL/SDL.h>
