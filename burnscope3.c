@@ -26,7 +26,6 @@ void *cmalloc(int len) {
   }
 }
 
-
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
 
@@ -53,12 +52,12 @@ void rectangle_sum(int add[], pixel3_t *pixbuf, const int W, const int H,
 
   if (y < 0) {
     if (wrap_borders)
-      rectangle_sum(add, pixbuf, W, H, x, H - (-y), w, -y, wrap_borders);
+      rectangle_sum(add, pixbuf, W, H, x_start, H - (-y), x_end-x_start, -y, wrap_borders);
     y_start = 0;
   }
   if (y_end > H) {
     if (wrap_borders)
-      rectangle_sum(add, pixbuf, W, H, x, 0, w, y_end - H, wrap_borders);
+      rectangle_sum(add, pixbuf, W, H, x_start, 0, x_end-x_start, y_end - H, wrap_borders);
     y_end = H;
   }
 
@@ -179,7 +178,7 @@ int main(int argc, char *argv[])
   int H = 200;
   int multiply_pixels = 2;
   int apex_r = 2;
-  float underdampen = .9945;
+  float underdampen = .9845;
   int frame_period = 70;
   bool usage = false;
   bool error = false;
@@ -350,10 +349,10 @@ int main(int argc, char *argv[])
   SDL_WM_SetCaption("burnscope", "burnscope");
 
 
-  pixel3_t buf1[W * H];
-  pixel3_t buf2[W * H];
-  bzero(buf1, sizeof(buf1));
-  bzero(buf2, sizeof(buf2));
+  pixel3_t *buf1 = malloc(W * H * sizeof(pixel3_t));
+  pixel3_t *buf2 = malloc(W * H * sizeof(pixel3_t));
+  bzero(buf1, W*H*sizeof(pixel3_t));
+  bzero(buf2, W*H*sizeof(pixel3_t));
 
   pixel3_t *pixbuf = buf1;
   pixel3_t *swapbuf = buf2;

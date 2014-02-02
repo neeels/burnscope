@@ -188,36 +188,31 @@ void make_palette(palette_t *palette, int n_colors,
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
 
-int rectangle_sum(pixel_t *pixbuf, const int W, const int H,
-                  const int x, const int y, const int w, const int h,
+int rectangle_sum(pixel_t *pixbuf, int W, int H,
+                  int x_start, int y_start,
+                  int x_end, int y_end,
                   bool wrap_borders) {
-  int x_start, x_end;
-  int y_start, y_end;
-  x_start = x;
-  y_start = y;
-  x_end = x + w;
-  y_end = y + h;
   int sum = 0;
 
-  if (x < 0) {
+  if (x_start < 0) {
     if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, W - (-x), y, -x, h, wrap_borders);
+      sum += rectangle_sum(pixbuf, W, H, W - (-x_start), y_start, W, y_end, wrap_borders);
     x_start = 0;
   }
   if (x_end > W) {
     if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, 0, y, x_end - W, h, wrap_borders);
+      sum += rectangle_sum(pixbuf, W, H, 0, y_start, x_end - W, y_end, wrap_borders);
     x_end = W;
   }
 
-  if (y < 0) {
+  if (y_start < 0) {
     if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, x, H - (-y), w, -y, wrap_borders);
+      sum += rectangle_sum(pixbuf, W, H, x_start, H - (-y_start), x_end, H, wrap_borders);
     y_start = 0;
   }
   if (y_end > H) {
     if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, x, 0, w, y_end - H, wrap_borders);
+      sum += rectangle_sum(pixbuf, W, H, x_start, 0, x_end, y_end - H, wrap_borders);
     y_end = H;
   }
 
@@ -237,10 +232,12 @@ int rectangle_sum(pixel_t *pixbuf, const int W, const int H,
 int surrounding_sum(pixel_t *pixbuf, const int W, const int H,
                     const int x, const int y, const int apex_r,
                     bool wrap_borders) {
-  return rectangle_sum(pixbuf, W, H, 
-                       x - apex_r, y - apex_r, 
-                       2 * apex_r + 1,
-                       2 * apex_r + 1,
+  int x_start = x - apex_r;
+  int y_start = y - apex_r;
+  int wh = 2 * apex_r + 1;
+  int x_end = x_start + wh;
+  int y_end = y_start + wh;
+  return rectangle_sum(pixbuf, W, H, x_start, y_start, x_end, y_end,
                        wrap_borders);
 }
 
@@ -329,7 +326,7 @@ int main(int argc, char *argv[])
 {
   int W = 200;
   int H = 200;
-  int multiply_pixels = 2;
+  int multiply_pixels = 1;
   int apex_r = 2;
   float underdampen = .9945;
   int frame_period = 70;
@@ -498,13 +495,19 @@ int main(int argc, char *argv[])
   SDL_WM_SetCaption("burnscope", "burnscope");
 
 #if 1
-#define n_palette_points 6
+#define n_palette_points 11
   palette_point_t palette_points[n_palette_points] = {
-    { 0./6, 0, .1, .1 },
-    { 3./6, 0, 0, .7 },
+    { 0./6, 1, 1, 1 },
+    { 0.5/6, 1, .9, 0 },
+    { 1./6, 1, .1, 1 },
+    { 1.5/6, 0, 0, 1 },
+    { 3./6, .5, 0, .7 },
+    { 3.5/6, 0, 1, .7 },
     { 4.5/6, .2, .8, .2 },
+    { 4.8/6, 0, 0, 1 },
     { 5.25/6, .8, .8, 0 },
-    { 5.75/6, .8,.0,.0 },
+    { 5.55/6, .8, .2, 0.4 },
+    { 5.85/6, .0,.60,.50 },
   };
 #else
 #define n_palette_points 2
@@ -521,10 +524,10 @@ int main(int argc, char *argv[])
                palette_points, n_palette_points,
                screen->format);
 
-  pixel_t buf1[W * H];
-  pixel_t buf2[W * H];
-  bzero(buf1, sizeof(buf1));
-  bzero(buf2, sizeof(buf2));
+  pixel_t *buf1 = malloc(W * H * sizeof(pixel_t));
+  pixel_t *buf2 = malloc(W * H * sizeof(pixel_t));
+  bzero(buf1, W * H * sizeof(pixel_t));
+  bzero(buf2, W * H * sizeof(pixel_t));
 
   pixel_t *pixbuf = buf1;
   pixel_t *swapbuf = buf2;
@@ -533,9 +536,10 @@ int main(int argc, char *argv[])
   printf("random seed: %d\n", rseed);
   srandom(rseed);
 
+  bool xs, ys;
+
   { 
     int i, j;
-    bool xs, ys;
     if (asymmetrical)
       xs = ys = false;
     else {
@@ -552,7 +556,8 @@ int main(int argc, char *argv[])
       }
     }
     printf("%s\n",
-           (xs? (ys? "point-symmetrical about center" : "x-symmetrical (about vertical axis)")
+           (xs? (ys? "x- and y-symmetrical (about vertical and horizontal axes)" :
+                     "x-symmetrical (about vertical axis)")
               : (ys? "y-symmetrical (about horizontal axis)" : "asymmetrical"))
               );
     j = W * H / 5;
@@ -561,11 +566,12 @@ int main(int argc, char *argv[])
     if (! ys)
       j *= 2;
     for (i = 0; i < j; i ++) {
-      seed(pixbuf, W, H, random() % W, random() % H, 70, xs, ys);
+      //seed(pixbuf, W, H, random() % W, random() % H, 70, xs, ys);
     }
   }
 
   int last_ticks = SDL_GetTicks() - frame_period;
+  int do_seed = 0;
 
   while (1)
   {
@@ -582,6 +588,14 @@ int main(int argc, char *argv[])
     }
 
     if (do_render) {
+      if (do_seed) {
+        int i;
+        for (i = 0; i < do_seed; i++) {
+          seed(pixbuf, W, H, random() % W, random() % H, 200, xs, ys);
+        }
+        if (do_seed < 100)
+          do_seed ++;
+      }
       pixel_t *tmp = swapbuf;
       swapbuf = pixbuf;
       pixbuf = tmp;
@@ -605,14 +619,31 @@ int main(int argc, char *argv[])
     {
       switch (event.type) 
       {
-      case SDL_KEYDOWN:
-        // If escape is pressed, return (and thus, quit)
-        if (event.key.keysym.sym == SDLK_ESCAPE)
-          return 0;
-        break;
+        case SDL_KEYDOWN:
+          // If escape is pressed, return (and thus, quit)
+          if (event.key.keysym.sym == SDLK_ESCAPE)
+            return 0;
+          if (event.key.keysym.sym == SDLK_RIGHT)
+            divider += .01;
+          if (event.key.keysym.sym == SDLK_LEFT)
+            divider -= .01;
+          if (event.key.keysym.sym == SDLK_UP)
+            divider += 1./256;
+          if (event.key.keysym.sym == SDLK_DOWN)
+            divider -= 1./256;
+          printf("%f\n", divider);
 
-      case SDL_QUIT:
-        return 0;
+          if (event.key.keysym.sym == 's')
+            do_seed = 1;
+          break;
+
+        case SDL_KEYUP:
+          if (event.key.keysym.sym == 's')
+            do_seed = 0;
+          break;
+
+        case SDL_QUIT:
+          return 0;
       }
     }
   }
