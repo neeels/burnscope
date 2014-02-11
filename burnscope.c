@@ -15,7 +15,10 @@
 #include <assert.h>
 #include <stdio.h>
 
-typedef float pixel_t;
+#define PALETTE_LEN_BITS 12
+#define PALETTE_LEN (1 << PALETTE_LEN_BITS)
+
+typedef Uint32 pixel_t;
 
 typedef struct {
   Uint32 *colors;
@@ -163,11 +166,13 @@ void make_palette(palette_t *palette, int n_colors,
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
 
-float rectangle_sum(pixel_t *pixbuf, int W, int H,
-                    int x_start, int y_start,
-                    int x_end, int y_end,
-                    bool wrap_borders) {
-  float sum = 0;
+#define SUM_RANGE_BITS 8
+
+Uint32 rectangle_sum(pixel_t *pixbuf, int W, int H,
+                     int x_start, int y_start,
+                     int x_end, int y_end,
+                     bool wrap_borders) {
+  Uint32 sum = 0;
 
   if (x_start < 0) {
     if (wrap_borders)
@@ -196,7 +201,7 @@ float rectangle_sum(pixel_t *pixbuf, int W, int H,
   int xpos, ypos;
   for (ypos = y_start; ypos < y_end; ypos ++) {
     for (xpos = x_start; xpos < x_end; xpos ++) {
-      sum += *bufpos;
+      sum += (*bufpos) >> SUM_RANGE_BITS;
       bufpos ++;
     }
     bufpos += pitch;
@@ -204,9 +209,9 @@ float rectangle_sum(pixel_t *pixbuf, int W, int H,
   return sum;
 }
 
-float surrounding_sum(pixel_t *pixbuf, const int W, const int H,
-                      const int x, const int y, const int apex_r,
-                      bool wrap_borders) {
+Uint32 surrounding_sum(pixel_t *pixbuf, const int W, const int H,
+                       const int x, const int y, const int apex_r,
+                       bool wrap_borders) {
   int x_start = x - apex_r;
   int y_start = y - apex_r;
   int wh = 2 * apex_r + 1;
@@ -223,14 +228,14 @@ void burn(pixel_t *srcbuf, pixel_t *destbuf, const int W, const int H,
   int x, y;
   int x_end = rect_x + rect_w;
   int y_end = rect_y + rect_h;
-  float sum;
+  Uint64 sum;
   int pitch = W - rect_w;
   pixel_t *destpos = destbuf + (rect_y * W) + rect_x;
   for (y = rect_y; y < y_end; y++) {
     for (x = rect_x; x < x_end; x++) {
       sum = surrounding_sum(srcbuf, W, H, x, y, apex_r, wrap_borders) / divider;
 
-      *(destpos ++) = sum - truncf(sum);
+      *(destpos ++) = sum << SUM_RANGE_BITS;
     }
     destpos += pitch;
   }
@@ -312,9 +317,8 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     for (my = 0; my < multiply_pixels; my ++) {
       pixbufpos = pixbuf_y_pos;
       for (x = 0; x < W; x++) {
-        int col = (int)((*pixbufpos) * palette->len);
-        col += colorshift;
-        col %= palette->len;
+        Uint32 col = (*pixbufpos) + (colorshift << (32 - PALETTE_LEN_BITS));
+        col >>= 32 - PALETTE_LEN_BITS;
         Uint32 raw = palette->colors[col];
         for (mx = 0; mx < multiply_pixels; mx++) {
           *screenpos = raw;
@@ -372,7 +376,7 @@ int main(int argc, char *argv[])
   int H = 240;
   int multiply_pixels = 1;
   int apex_r = 2;
-  float underdampen = .9978;
+  float underdampen = .995;
   int frame_period = 70;
   bool usage = false;
   bool error = false;
@@ -529,7 +533,6 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
-  atexit(SDL_Quit);
     
   screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
   if ( screen == NULL ) 
@@ -539,6 +542,7 @@ int main(int argc, char *argv[])
   }
   
   SDL_WM_SetCaption("burnscope", "burnscope");
+  SDL_ShowCursor(SDL_DISABLE);
 
 #if 1
 #define n_palette_points 11
@@ -566,7 +570,7 @@ int main(int argc, char *argv[])
 #endif
 
   palette_t palette;
-  make_palette(&palette, 4096,
+  make_palette(&palette, PALETTE_LEN,
                palette_points, n_palette_points,
                screen->format);
 
@@ -591,7 +595,7 @@ int main(int argc, char *argv[])
     j *= j;
     j = W * H / j;
     for (i = 0; i < j; i ++) {
-      seed(pixbuf, W, H, random() % (W), random() % (H), .70, apex_r);
+      seed(pixbuf, W, H, random() % (W), random() % (H), 0x80000000, apex_r);
     }
   }
 
@@ -599,27 +603,30 @@ int main(int argc, char *argv[])
   bool seed_key_down = false;
   int do_seed = 0;
 
-  float t = 0;
+  int frames_rendered = 0;
   int cc = 0;
   float wavy = 0;
+  float wavy_amp = .0054;
   int colorshift = 0;
+  bool running = true;
 
-  while (1)
+  while (running)
   {
     bool do_render = false;
 
-    t = (float)SDL_GetTicks() / (1200. * 2*M_PI);
-    wavy = -.003 * sin(t);
-    colorshift = palette.len * (0.5 + 0.5 * cos(t*0.35162748327));
+    float t = (float)frames_rendered / 100.;
+    wavy = sin(t);
+    colorshift = palette.len * (0.5 + 0.5 * cos(t*M_PI/50));
     
+    float dampen = underdampen + (wavy_amp * wavy);
     if ((++cc) > 40) {
-      printf("%.6f %6d %6d    \r", underdampen + wavy, colorshift, palette.len);
+      printf("%.5f + %.5f*%.1f = %.5f  apex_r=%3d  colorshift=%6d/%6d    \r", underdampen, wavy_amp, wavy, dampen, apex_r, colorshift, palette.len);
       fflush(stdout);
       cc = 0;
     }
 
     float divider = 1 + 2 * apex_r;
-    divider *= divider * (underdampen + wavy);
+    divider *= divider * dampen;
 
     if (frame_period < 1)
       do_render = true;
@@ -633,7 +640,7 @@ int main(int argc, char *argv[])
 
     if (do_render) {
       while (do_seed) {
-        seed(pixbuf, W, H, random() % (W>>1), random() % (H>>1), 200, apex_r);
+        seed(pixbuf, W, H, random() % (W>>1), random() % (H>>1), 0x80000000, apex_r);
         do_seed --;
       }
       pixel_t *tmp = swapbuf;
@@ -661,6 +668,7 @@ int main(int argc, char *argv[])
         mirror_p(pixbuf, W, H);
 
       render(screen, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift);
+      frames_rendered ++;
     }
     else
       SDL_Delay(5);
@@ -676,7 +684,8 @@ int main(int argc, char *argv[])
 
           switch(event.key.keysym.sym) {
             case SDLK_ESCAPE:
-              return 0;
+              running = false;
+              break;
 
             case SDLK_RIGHT:
               underdampen += .0002;
@@ -685,10 +694,10 @@ int main(int argc, char *argv[])
               underdampen -= .0002;
               break;
             case SDLK_UP:
-              underdampen += .000001;
+              wavy_amp += .0002;
               break;
             case SDLK_DOWN:
-              underdampen -= .000001;
+              wavy_amp -= .0002;
               break;
 
             case 's':
@@ -704,6 +713,17 @@ int main(int argc, char *argv[])
               symm = (symm + 1) % SYMMETRY_KINDS;
               break;
 
+            case '+':
+            case '=':
+              if (apex_r < W)
+                apex_r ++;
+              break;
+
+            case '-':
+              if (apex_r > 1)
+                apex_r --;
+              break;
+
             default:
               break;
           }
@@ -716,19 +736,17 @@ int main(int argc, char *argv[])
           break;
 
         case SDL_QUIT:
-          return 0;
+          running = false;
+          break;
       }
     }
 
-    if (underdampen_was != underdampen) {
-      printf("%f\r", underdampen);
-      fflush(stdout);
-    }
-
     if (symm != symm_was) {
-      printf("%s\n", symmetry_name[symm]);
+      printf("\n%s (Remember to hit 's' as needed)\n", symmetry_name[symm]);
       symm_was = symm;
     }
   }
+  printf("\n");
+  SDL_Quit();
   return 0;
 }
