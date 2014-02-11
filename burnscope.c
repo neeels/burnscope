@@ -6,12 +6,14 @@
  */
 
 #include <math.h>
+#include <time.h>
 #include <stdlib.h>
 #include <SDL/SDL.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <stdio.h>
 
 typedef float pixel_t;
 
@@ -44,12 +46,14 @@ char *symmetry_name[SYMMETRY_KINDS] = {
     "point-symmetrical"
   };
 
-void *malloc_check(int len) {
-  void *p = malloc(len);
+static void *malloc_check(size_t len) {
+  void *p;
+  p = malloc(len);
   if (! p) {
-    printf("No mem.");
+    printf("No mem.\n");
     exit(-1);
   }
+  return p;
 }
 
 void set_color(palette_t *palette, int i, float r, float g, float b,
@@ -252,7 +256,7 @@ void mirror_x(pixel_t *pixbuf, const int W, const int H) {
 }
 
 void mirror_y(pixel_t *pixbuf, const int W, const int H) {
-  int x, y;
+  int x;
   int y_fold = H >> 1;
   pixel_t *pos_to, *pos_from, *end;
   end = pixbuf + W * H;
@@ -270,7 +274,7 @@ void mirror_y(pixel_t *pixbuf, const int W, const int H) {
 }
 
 void mirror_p(pixel_t *pixbuf, const int W, const int H) {
-  int x, y;
+  int x;
   int y_fold = (H >> 1) + (H & 1);
   pixel_t *pos_to, *pos_from, *end;
   end = pixbuf + W * H;
@@ -311,7 +315,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         int col = (int)((*pixbufpos) * palette->len);
         col += colorshift;
         col %= palette->len;
-        Uint32 raw = *((Uint32*) &(palette->colors[col]));
+        Uint32 raw = palette->colors[col];
         for (mx = 0; mx < multiply_pixels; mx++) {
           *screenpos = raw;
           screenpos ++;
@@ -321,6 +325,20 @@ void render(SDL_Surface *screen, const int winW, const int winH,
       screenpos += pitch;
     }
   }
+
+#if 0
+  {
+    int i, l;
+    l = palette->len;
+    if (l > W*H) {
+      l = W*H;
+    }
+    for (i = 0; i < l; i++) {
+      ((Uint32*)screen->pixels)[i] = palette->colors[i];
+    }
+  }
+#endif
+
 
   // Unlock if needed
   if (SDL_MUSTLOCK(screen)) 
@@ -332,8 +350,8 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
 void seed1(pixel_t *pixbuf, const int W, const int H, int x, int y,
            pixel_t val) {
-  x %= W;
-  y %= H;
+  if ((x < 0) || (x >= W) || (y < 0) || (y >= H))
+    return;
   pixbuf[x + y * W] += val;
 }
 
@@ -358,7 +376,6 @@ int main(int argc, char *argv[])
   int frame_period = 70;
   bool usage = false;
   bool error = false;
-  bool asymmetrical = false;
   bool wrap_borders = true;
   bool start_blank = false;
   symmetry_t symm = symm_x;
@@ -507,7 +524,7 @@ int main(int argc, char *argv[])
 
   SDL_Surface *screen;
 
-  if ( SDL_Init(SDL_INIT_VIDEO) < 0 ) 
+  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 ) 
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
@@ -570,7 +587,9 @@ int main(int argc, char *argv[])
 
   if (! start_blank) {
     int i, j;
-    j = (W * H / 5) / apex_r;
+    j = 2*apex_r + 1;
+    j *= j;
+    j = W * H / j;
     for (i = 0; i < j; i ++) {
       seed(pixbuf, W, H, random() % (W), random() % (H), .70, apex_r);
     }
