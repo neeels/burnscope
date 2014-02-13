@@ -1,0 +1,386 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdbool.h>
+
+#include <fftw3.h>
+#include <SDL/SDL.h>
+
+#define PALETTE_LEN_BITS 12
+#define PALETTE_LEN (1 << PALETTE_LEN_BITS)
+
+typedef struct {
+  Uint32 *colors;
+  unsigned int len;
+} palette_t;
+
+typedef struct {
+  float pos;
+  float r;
+  float g;
+  float b;
+} palette_point_t;
+
+static void *malloc_check(size_t len) {
+  void *p;
+  p = malloc(len);
+  if (! p) {
+    printf("No mem.\n");
+    exit(-1);
+  }
+  return p;
+}
+
+void set_color(palette_t *palette, int i, float r, float g, float b,
+               SDL_PixelFormat *format) {
+  if (i >= palette->len)
+    return;
+  palette->colors[i] = SDL_MapRGB(format, r * 255, g * 255, b * 255);
+}
+
+/* Generates a color palette, setting palette->colors and palette->len.
+ * Allocates new memory for palette->colors (is not freed or reallocd).
+ * 'n_colors' defines how many colors are generated in the palette.
+ * 'points' is a definition colors at specific intervals, 'n_points' gives the
+ * number of palette_point_t array elements in 'points'.
+ * 'format' is used to generate video mode specific color data. */
+void make_palette(palette_t *palette, int n_colors,
+                  palette_point_t *points, int n_points,
+                  SDL_PixelFormat *format) {
+  int i;
+
+  palette->colors = malloc_check(n_colors * sizeof(Uint32));
+  palette->len = n_colors;
+
+
+  if (n_points < 1) {
+    for (i = 0; i < palette->len; i++) {
+      float val = (float)i / palette->len;
+      set_color(palette, i, val, val, val, format);
+    }
+    return;
+  }
+
+  palette_point_t *last_p = points;
+  palette_point_t *first_p = points;
+
+  for (i = 1; i < n_points; i ++) {
+    if (points[i].pos > last_p->pos)
+      last_p = &points[i];
+    if (points[i].pos < first_p->pos)
+      first_p = &points[i];
+  }
+  if (last_p->pos > 1.0) {
+    float norm_factor = last_p->pos;
+    for (i = 0; i < n_points; i ++)
+      points[i].pos /= norm_factor;
+  }
+  
+  // duplicate the last point to "the left", wrap back below zero.
+  palette_point_t p = *last_p;
+  p.pos -= 1.0;
+  // ...unless another point is defined there.
+  if (p.pos >= first_p->pos)
+    p = *first_p;
+
+  // also duplicate the first point to "the right".
+  palette_point_t post_last = *first_p;
+  post_last.pos += 1.0;
+
+  int color_pos = 0;
+
+  while(color_pos < n_colors) {
+
+    // look for the next point, the one with the next largest pos after p.pos
+    palette_point_t *next_p = NULL;
+    for (i = 0; i < n_points; i ++) {
+      float i_pos = points[i].pos;
+      if ((i_pos > p.pos)
+          &&
+          (
+           (! next_p)
+           || (i_pos < next_p->pos)
+          )
+         )
+        next_p = &points[i];
+    }
+
+    if (! next_p)
+      next_p = &post_last;
+
+    int next_color_pos = (int)(next_p->pos * n_colors) + 1;
+
+    if (next_color_pos <= color_pos)
+      next_color_pos = color_pos + 1;
+
+    for (; color_pos < next_color_pos; color_pos ++) {
+      float prevpos = p.pos;
+      float nextpos = next_p->pos;
+      float currentpos = ((float)color_pos) / n_colors;
+      float fade;
+      if ((nextpos - prevpos) < 1e-3)
+        fade = 0.5;
+      else
+        fade = (currentpos - prevpos) / (nextpos - prevpos);
+      float rfade = 1.0 - fade;
+      float r = rfade * p.r  +  fade * next_p->r;
+      float g = rfade * p.g  +  fade * next_p->g;
+      float b = rfade * p.b  +  fade * next_p->b;
+
+      set_color(palette, color_pos, r, g, b, format);
+    }
+
+    p = *next_p;
+  }
+}
+
+void render(SDL_Surface *screen, const int winW, const int winH,
+            palette_t *palette, double *pixbuf, const int W, const int H)
+{   
+  // Lock surface if needed
+  if (SDL_MUSTLOCK(screen)) 
+    if (SDL_LockSurface(screen) < 0) 
+      return;
+
+
+  int x, y;
+  int pitch = screen->pitch / sizeof(Uint32) - winW;
+
+  double max = 1e-5;
+  double min = 0;
+  y = W * H;
+  for (x = 0; x < y; x++) {
+    double v = pixbuf[x];
+    if (v > max)
+      max = v;
+    if (v < min)
+      min = v;
+  }
+  min = 0;
+
+  Uint32 *screenpos = (Uint32*)(screen->pixels);
+  double *pixbufpos;
+  for (y = 0; y < H; y++) {
+    pixbufpos = pixbuf + y;
+    for (x = 0; x < W; x++) {
+      double col = ((double)(palette->len)) * ((*pixbufpos) - min)/(max - min);
+      if (col >= palette->len)
+        col = palette->len - 1;
+      if (col < 0)
+        col = 0;
+      Uint32 raw = palette->colors[(int)col];
+      *screenpos = raw;
+      screenpos ++;
+      pixbufpos += H;
+    }
+    screenpos += pitch;
+  }
+
+#if 0
+  {
+    int i, l;
+    l = palette->len;
+    if (l > W*H) {
+      l = W*H;
+    }
+    for (i = 0; i < l; i++) {
+      ((Uint32*)screen->pixels)[i] = palette->colors[i];
+    }
+  }
+#endif
+
+
+  // Unlock if needed
+  if (SDL_MUSTLOCK(screen)) 
+    SDL_UnlockSurface(screen);
+
+  // Tell SDL to update the whole screen
+  SDL_UpdateRect(screen, 0, 0, winW, winH);
+}
+
+int main()
+{
+  // apply FFT to real 2D data.
+
+  double *in;
+  double *apex;
+  double *in2;
+  int W = 256;
+  int H = 256;
+  int half_H = (H / 2) + 1;
+  int x;
+  int y;
+  fftw_complex *out;
+  fftw_complex *apex_f;
+  fftw_plan plan_backward;
+  fftw_plan plan_apex;
+  fftw_plan plan_forward;
+  unsigned int seed = 123456789;
+  srand(seed);
+
+  in = (double *) malloc_check(sizeof(double) * W * H);
+  for(x = 0; x < W; x++)
+  {
+    for(y = 0; y < H; y++)
+    {
+#if 0
+      in[x*H+y] =  ( double ) rand ( ) / ( RAND_MAX );
+#else
+      in[x*H+y] =  0;
+#endif
+    }
+  }
+  in[(H/2) + (W/2)*H] = 1;
+  in[(H/2)+3 + (W/2 + 3)*H] = 1;
+  in[10 + (20)*H] = 1;
+  in[H-10 + (W-20)*H] = 1;
+
+
+  apex = (double*)malloc_check(sizeof(double) * W * H);
+  for(x = 0; x < W; x++)
+  {
+    for(y = 0; y < H; y++)
+    {
+#if 0
+      if ((x < 5) || (y < 5) || ((W-x)<5) || ((H-y)<5))
+#else
+      if ((x < 10) && (y < 10))
+#endif
+        apex[x*H+y] = .5;
+      else
+        apex[x*H+y] = 0;
+    }
+  }
+  apex_f = fftw_malloc(sizeof(fftw_complex) * W * half_H);
+  plan_apex = fftw_plan_dft_r2c_2d(W, H, apex, apex_f, FFTW_ESTIMATE);
+  fftw_execute(plan_apex);
+
+
+  out = fftw_malloc(sizeof(fftw_complex) * W * half_H);
+  plan_forward = fftw_plan_dft_r2c_2d(W, H, in, out, FFTW_ESTIMATE);
+  fftw_execute(plan_forward);
+
+#if 1
+  for (x = 0; x < W; x++) {
+    for (y = 0; y < half_H; y++) {
+      double *o = out[x*half_H + y];
+      double *af = apex_f[x*half_H + y];
+      double a, b, c, d;
+      a = o[0]; b = o[1];
+      c = af[0]; d = af[1];
+#if 1
+      o[0] = (a*c - b*d);
+      o[1] = (b*c + a*d);
+#else
+      double l = sqrt(c*c + d*d);
+      o[0] *= l;
+      o[1] *= l;
+#endif
+    }
+  }
+#endif
+
+  in2 = (double *) malloc(sizeof(double) * W * H);
+  plan_backward = fftw_plan_dft_c2r_2d(W, H, out, in2, FFTW_ESTIMATE);
+  fftw_execute(plan_backward);
+
+
+  SDL_Surface *screen;
+
+  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 ) 
+  {
+    fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
+    exit(1);
+  }
+    
+  int winW = W;
+  int winH = H;
+  screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
+  if ( screen == NULL ) 
+  {
+    fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
+    exit(1);
+  }
+  
+  SDL_WM_SetCaption("burnscope", "burnscope");
+  SDL_ShowCursor(SDL_DISABLE);
+
+#if 1
+#define n_palette_points 2
+  palette_point_t palette_points[n_palette_points] = {
+    { 0., 0, 0, 0 },
+    { 1., 1, 1, 1 },
+  };
+#else
+#define n_palette_points 2
+  palette_point_t palette_points[n_palette_points] = {
+    { 0, 0, 0, 0 },
+//    { 0.5, 0,0,0 },
+    { 0.5 + 3./256, 0, .8, 0 },
+  //  { 0.5 + 6./256, 0, .0, 0 },
+  };
+#endif
+
+  palette_t palette;
+  make_palette(&palette, PALETTE_LEN,
+               palette_points, n_palette_points,
+               screen->format);
+
+  bool running = true;
+  int frame_period = 100;
+  int last_ticks = SDL_GetTicks() - frame_period;
+
+  while (running)
+  {
+    bool do_render = false;
+
+    int elapsed = SDL_GetTicks() - last_ticks;
+    if (elapsed > frame_period) {
+      last_ticks += frame_period * (elapsed / frame_period);
+      do_render = true;
+    }
+
+    if (do_render) {
+      render(screen, winW, winH, &palette, in2, W, H);
+    }
+    else
+      SDL_Delay(5);
+
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) 
+    {
+      switch (event.type) 
+      {
+        case SDL_KEYDOWN:
+          // If escape is pressed, return (and thus, quit)
+
+          switch(event.key.keysym.sym) {
+            case SDLK_ESCAPE:
+              running = false;
+              break;
+
+            default:
+              break;
+          }
+          break;
+
+        case SDL_QUIT:
+          running = false;
+          break;
+      }
+    }
+
+  }
+  SDL_Quit();
+
+  fftw_destroy_plan(plan_apex);
+  fftw_destroy_plan(plan_forward);
+  fftw_destroy_plan(plan_backward);
+
+  free(in);
+  free(in2);
+  free(apex);
+  fftw_free(out);
+
+  return 0;
+}
