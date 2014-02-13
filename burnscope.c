@@ -376,7 +376,7 @@ int main(int argc, char *argv[])
   int H = 240;
   int multiply_pixels = 1;
   int apex_r = 2;
-  float underdampen = .995;
+  float underdampen = .996;
   int frame_period = 70;
   bool usage = false;
   bool error = false;
@@ -606,7 +606,7 @@ int main(int argc, char *argv[])
   int frames_rendered = 0;
   int cc = 0;
   float wavy = 0;
-  float wavy_amp = .0054;
+  float wavy_amp = .006;
   int colorshift = 0;
   bool running = true;
 
@@ -694,10 +694,10 @@ int main(int argc, char *argv[])
               underdampen -= .0002;
               break;
             case SDLK_UP:
-              wavy_amp += .0002;
+              wavy_amp += .0001;
               break;
             case SDLK_DOWN:
-              wavy_amp -= .0002;
+              wavy_amp -= .0001;
               break;
 
             case 's':
