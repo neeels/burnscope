@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include <fftw3.h>
+#include <math.h>
 #include <SDL/SDL.h>
 
 #define PALETTE_LEN_BITS 12
@@ -145,7 +146,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
   int x, y;
   int pitch = screen->pitch / sizeof(Uint32) - winW;
-
+#if 0
   double max = 1e-5;
   double min = 0;
   y = W * H;
@@ -156,18 +157,19 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     if (v < min)
       min = v;
   }
-  min = 0;
+  printf("%f .. %f\n", min, max);
+#endif
 
   Uint32 *screenpos = (Uint32*)(screen->pixels);
   double *pixbufpos;
   for (y = 0; y < H; y++) {
     pixbufpos = pixbuf + y;
     for (x = 0; x < W; x++) {
-      double col = ((double)(palette->len)) * ((*pixbufpos) - min)/(max - min);
-      if (col >= palette->len)
-        col = palette->len - 1;
-      if (col < 0)
+      int col = *pixbufpos;
+      if ((col >= palette->len) || (col < 0)) {
         col = 0;
+        *pixbufpos = 0;
+      }
       Uint32 raw = palette->colors[(int)col];
       *screenpos = raw;
       screenpos ++;
@@ -204,9 +206,8 @@ int main()
 
   double *in;
   double *apex;
-  double *in2;
-  int W = 256;
-  int H = 256;
+  int W = 640;
+  int H = 480;
   int half_H = (H / 2) + 1;
   int x;
   int y;
@@ -223,7 +224,7 @@ int main()
   {
     for(y = 0; y < H; y++)
     {
-#if 0
+#if 1
       in[x*H+y] =  ( double ) rand ( ) / ( RAND_MAX );
 #else
       in[x*H+y] =  0;
@@ -233,24 +234,65 @@ int main()
   in[(H/2) + (W/2)*H] = 1;
   in[(H/2)+3 + (W/2 + 3)*H] = 1;
   in[10 + (20)*H] = 1;
-  in[H-10 + (W-20)*H] = 1;
+  in[H-3 + (W-3)*H] = 1;
+
+  y = W * H;
+  for (x = 0; x < y; x++) {
+    in[x] *= PALETTE_LEN -10;
+  }
 
 
   apex = (double*)malloc_check(sizeof(double) * W * H);
+  double apex_sum = 0;
   for(x = 0; x < W; x++)
   {
     for(y = 0; y < H; y++)
     {
-#if 0
-      if ((x < 5) || (y < 5) || ((W-x)<5) || ((H-y)<5))
-#else
-      if ((x < 10) && (y < 10))
+      double dist = 0;
+      int xx = x;
+      int yy = y;
+      if (xx >= W/2)
+        xx = W - x;
+      if (yy >= H/2)
+        yy = H - y;
+      dist = sqrt(xx*xx + yy*yy);
+      double v = 8.01 - dist;
+      if (v < 0)
+        v = 0;
+#if 1
+      if (x == 2 && y == 1)
+        v = 302.1;
 #endif
-        apex[x*H+y] = .5;
-      else
-        apex[x*H+y] = 0;
+
+#if 0
+      if (x == W / 2 && y == H / 2)
+        v = 850;
+#endif
+
+#if 0
+      if (x < W/2 || y > H / 2)
+        v = -v * 1.85;
+#endif
+#if 0
+      if (x == W/3-1 && y == H/3-1)
+        v = 200;
+      if (x == W/3 && y == H/3)
+        v = -200;
+#endif
+      apex_sum += v;
+      apex[x*H+y] = v;
     }
   }
+
+  double burn = 1.005;
+  double apex_mul = (burn / (W*H)) / apex_sum;
+  printf("%f %f\n", apex_sum, apex_mul);
+
+  y = W * H;
+  for (x = 0; x < y; x++) {
+    apex[x] *= apex_mul;
+  }
+
   apex_f = fftw_malloc(sizeof(fftw_complex) * W * half_H);
   plan_apex = fftw_plan_dft_r2c_2d(W, H, apex, apex_f, FFTW_ESTIMATE);
   fftw_execute(plan_apex);
@@ -258,31 +300,8 @@ int main()
 
   out = fftw_malloc(sizeof(fftw_complex) * W * half_H);
   plan_forward = fftw_plan_dft_r2c_2d(W, H, in, out, FFTW_ESTIMATE);
-  fftw_execute(plan_forward);
+  plan_backward = fftw_plan_dft_c2r_2d(W, H, out, in, FFTW_ESTIMATE);
 
-#if 1
-  for (x = 0; x < W; x++) {
-    for (y = 0; y < half_H; y++) {
-      double *o = out[x*half_H + y];
-      double *af = apex_f[x*half_H + y];
-      double a, b, c, d;
-      a = o[0]; b = o[1];
-      c = af[0]; d = af[1];
-#if 1
-      o[0] = (a*c - b*d);
-      o[1] = (b*c + a*d);
-#else
-      double l = sqrt(c*c + d*d);
-      o[0] *= l;
-      o[1] *= l;
-#endif
-    }
-  }
-#endif
-
-  in2 = (double *) malloc(sizeof(double) * W * H);
-  plan_backward = fftw_plan_dft_c2r_2d(W, H, out, in2, FFTW_ESTIMATE);
-  fftw_execute(plan_backward);
 
 
   SDL_Surface *screen;
@@ -305,19 +324,26 @@ int main()
   SDL_WM_SetCaption("burnscope", "burnscope");
   SDL_ShowCursor(SDL_DISABLE);
 
-#if 1
+#if 0
 #define n_palette_points 2
   palette_point_t palette_points[n_palette_points] = {
     { 0., 0, 0, 0 },
     { 1., 1, 1, 1 },
   };
-#else
-#define n_palette_points 2
+#else 
+#define n_palette_points 11
   palette_point_t palette_points[n_palette_points] = {
-    { 0, 0, 0, 0 },
-//    { 0.5, 0,0,0 },
-    { 0.5 + 3./256, 0, .8, 0 },
-  //  { 0.5 + 6./256, 0, .0, 0 },
+    { 0./6, 1, 1, 1 },
+    { 0.5/6, 1, .9, 0 },
+    { 1./6, 1, .1, 1 },
+    { 1.5/6, 0, 0, 1 },
+    { 3./6, .5, 0, .7 },
+    { 3.5/6, 0, 1, .7 },
+    { 4.5/6, .2, .8, .2 },
+    { 4.8/6, 0, 0, 1 },
+    { 5.25/6, .8, .8, 0 },
+    { 5.55/6, .8, .2, 0.4 },
+    { 5.85/6, .0,.60,.50 },
   };
 #endif
 
@@ -327,7 +353,7 @@ int main()
                screen->format);
 
   bool running = true;
-  int frame_period = 100;
+  int frame_period = 50;
   int last_ticks = SDL_GetTicks() - frame_period;
 
   while (running)
@@ -341,7 +367,30 @@ int main()
     }
 
     if (do_render) {
-      render(screen, winW, winH, &palette, in2, W, H);
+      render(screen, winW, winH, &palette, in, W, H);
+      fftw_execute(plan_forward);
+
+#if 1
+      for (x = 0; x < W; x++) {
+        for (y = 0; y < half_H; y++) {
+          double *o = out[x*half_H + y];
+          double *af = apex_f[x*half_H + y];
+          double a, b, c, d;
+          a = o[0]; b = o[1];
+          c = af[0]; d = af[1];
+#if 1
+          o[0] = (a*c - b*d);
+          o[1] = (b*c + a*d);
+#else
+          double l = sqrt(c*c + d*d);
+          o[0] *= l;
+          o[1] *= l;
+#endif
+        }
+      }
+#endif
+
+      fftw_execute(plan_backward);
     }
     else
       SDL_Delay(5);
@@ -378,9 +427,9 @@ int main()
   fftw_destroy_plan(plan_backward);
 
   free(in);
-  free(in2);
   free(apex);
   fftw_free(out);
+  fftw_free(apex_f);
 
   return 0;
 }
