@@ -620,8 +620,8 @@ int main(int argc, char *argv[])
     
     float dampen = underdampen + (wavy_amp * wavy);
     if ((++cc) > 40) {
-      printf("%.5f + %.5f*%.1f = %.5f  apex_r=%3d  colorshift=%6d/%6d    \r", underdampen, wavy_amp, wavy, dampen, apex_r, colorshift, palette.len);
-      fflush(stdout);
+      //printf("%.5f + %.5f*%.1f = %.5f  apex_r=%3d  colorshift=%6d/%6d    \r", underdampen, wavy_amp, wavy, dampen, apex_r, colorshift, palette.len);
+      //fflush(stdout);
       cc = 0;
     }
 

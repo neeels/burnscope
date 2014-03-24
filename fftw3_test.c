@@ -259,7 +259,7 @@ int main()
       double v = 8.01 - dist;
       if (v < 0)
         v = 0;
-#if 1
+#if 0
       if (x == 2 && y == 1)
         v = 302.1;
 #endif
