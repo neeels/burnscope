@@ -14,6 +14,11 @@
 #include <unistd.h>
 #include <assert.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <png.h>
+#include <stdint.h>
 
 #define PALETTE_LEN_BITS 12
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
@@ -40,6 +45,7 @@ typedef enum {
   symm_point = 4
 } symmetry_t;
 #define SYMMETRY_KINDS 5
+
 
 char *symmetry_name[SYMMETRY_KINDS] = {
     "asymmetrical",
@@ -296,7 +302,7 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 
 void render(SDL_Surface *screen, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf, const int W, const int H,
-            int multiply_pixels, int colorshift)
+            int multiply_pixels, int colorshift, const char *out_path)
 {   
   // Lock surface if needed
   if (SDL_MUSTLOCK(screen)) 
@@ -310,19 +316,87 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   int mx, my;
   int pitch = screen->pitch / sizeof(Uint32) - winW;
 
+  FILE * png_fp;
+  png_structp png_ptr = NULL;
+  png_infop png_info = NULL;
+  png_byte ** png_row_pointers = NULL;
+  /* The following number is set by trial and error only. I cannot
+     see where it it is documented in the libpng manual.
+  */
+  const int png_pixel_size = 3;
+  const int png_depth = 8;
+
+  if (out_path) {
+    png_fp = fopen (out_path, "wb");
+    if (! png_fp) {
+      fprintf(stderr, "Cannot open for writing: '%s'", out_path);
+      return;
+    }
+
+    png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (png_ptr == NULL) {
+        goto png_create_write_struct_failed;
+    }
+    
+    png_info = png_create_info_struct (png_ptr);
+    if (png_info == NULL) {
+        goto png_create_info_struct_failed;
+    }
+    
+    /* Set up error handling. */
+
+    if (setjmp (png_jmpbuf (png_ptr))) {
+        goto png_failure;
+    }
+    
+    /* Set image attributes. */
+
+    png_set_IHDR (png_ptr,
+                  png_info,
+                  winW,
+                  winH,
+                  png_depth,
+                  PNG_COLOR_TYPE_RGB,
+                  PNG_INTERLACE_NONE,
+                  PNG_COMPRESSION_TYPE_DEFAULT,
+                  PNG_FILTER_TYPE_DEFAULT);
+
+    png_row_pointers = png_malloc (png_ptr, winH * sizeof (png_byte *));
+  }
+
   Uint32 *screenpos = (Uint32*)(screen->pixels);
   pixel_t *pixbufpos = pixbuf;
+  int winy = 0;
   for (y = 0; y < H; y++) {
     pixel_t *pixbuf_y_pos = pixbufpos;
-    for (my = 0; my < multiply_pixels; my ++) {
+
+    for (my = 0; my < multiply_pixels; my ++, winy++) {
+      png_byte *png_row;
+      if (out_path) {
+        png_row = png_malloc (png_ptr, sizeof (uint8_t) * winW * png_pixel_size);
+        png_row_pointers[winy] = png_row;
+      }
+
       pixbufpos = pixbuf_y_pos;
+      int winx = 0;
       for (x = 0; x < W; x++) {
         Uint32 col = (*pixbufpos) + (colorshift << (32 - PALETTE_LEN_BITS));
         col >>= 32 - PALETTE_LEN_BITS;
         Uint32 raw = palette->colors[col];
-        for (mx = 0; mx < multiply_pixels; mx++) {
+        Uint8 r, g, b;
+
+        if (out_path)
+          SDL_GetRGB(raw, screen->format, &r, &g, &b);
+
+        for (mx = 0; mx < multiply_pixels; mx++, winx++) {
           *screenpos = raw;
           screenpos ++;
+
+          if (out_path) {
+            *png_row++ = r;
+            *png_row++ = g;
+            *png_row++ = b;
+          }
         }
         pixbufpos ++;
       }
@@ -350,6 +424,23 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
   // Tell SDL to update the whole screen
   SDL_UpdateRect(screen, 0, 0, winW, winH);
+
+  if (out_path) {
+    png_init_io (png_ptr, png_fp);
+    png_set_rows (png_ptr, png_info, png_row_pointers);
+    png_write_png (png_ptr, png_info, PNG_TRANSFORM_IDENTITY, NULL);
+
+    for (y = 0; y < winH; y++) {
+        png_free (png_ptr, png_row_pointers[y]);
+    }
+    png_free (png_ptr, png_row_pointers);
+    
+ png_failure:
+ png_create_info_struct_failed:
+    png_destroy_write_struct (&png_ptr, &png_info);
+ png_create_write_struct_failed:
+    fclose (png_fp);
+  }
 }
 
 void seed1(pixel_t *pixbuf, const int W, const int H, int x, int y,
@@ -385,9 +476,12 @@ int main(int argc, char *argv[])
   symmetry_t symm = symm_x;
 
   int c;
+  int random_seed = time(NULL);
+
+  char *out_dir = NULL;
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:u:AbBh");
+    c = getopt(argc, argv, "a:g:m:p:r:u:O:AbBh");
     if (c == -1)
       break;
    
@@ -426,6 +520,14 @@ int main(int argc, char *argv[])
 
       case 'u':
         underdampen = atof(optarg);
+        break;
+
+      case 'r':
+        random_seed = atoi(optarg);
+        break;
+
+      case 'O':
+        out_dir = optarg;
         break;
 
       case 'b':
@@ -468,16 +570,17 @@ int main(int argc, char *argv[])
 "\n"
 "Options:\n"
 "\n"
-"  -g WxH  Set animation width and height in number of pixels.\n"
-"  -p ms   Set frame period to <ms> milliseconds (slow things down).\n"
-"          If zero, run as fast as possible. Default is %d.\n"
-"  -m N    Multiply each pixel N times in width and height, to give a larger\n"
-"          picture. This will also multiply the window size.\n"
-"  -a W    Set apex radius, i.e. the blur distance. Default is %d.\n"
-"  -u N.n  Set underdampening factor (decimal). Default is %.3f.\n"
-"          Reduces normal blur dampening by this factor.\n"
-"  -b      Assume zeros around borders. Default is to wrap around borders.\n"
-"  -B      Start out blank. (Use 's' key to plant seeds while running.)\n"
+"  -g WxH   Set animation width and height in number of pixels.\n"
+"  -p ms    Set frame period to <ms> milliseconds (slow things down).\n"
+"           If zero, run as fast as possible. Default is %d.\n"
+"  -m N     Multiply each pixel N times in width and height, to give a larger\n"
+"           picture. This will also multiply the window size.\n"
+"  -a W     Set apex radius, i.e. the blur distance. Default is %d.\n"
+"  -u N.n   Set underdampening factor (decimal). Default is %.3f.\n"
+"           Reduces normal blur dampening by this factor.\n"
+"  -r seed  Supply a random seed to start off with.\n"
+"  -b       Assume zeros around borders. Default is to wrap around borders.\n"
+"  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
 , frame_period, apex_r, underdampen
 );
     if (error)
@@ -523,6 +626,13 @@ int main(int argc, char *argv[])
     fprintf(stderr, "pixel multiplication is too large: %dx%d times %d = %dx%d\n",
             W, H, multiply_pixels, winW, winH);
     exit(-1);
+  }
+
+  if (out_dir) {
+    int err = mkdir(out_dir, 0777);
+    if (err) {
+      fprintf(stderr, "cannot make dir: %s\n", out_dir);
+    }
   }
 
 
@@ -582,11 +692,8 @@ int main(int argc, char *argv[])
   pixel_t *pixbuf = buf1;
   pixel_t *swapbuf = buf2;
 
-  int rseed = time(NULL);
-  printf("random seed: %d\n", rseed);
-  srandom(rseed);
-
-  symmetry_t symm_was = -1;
+  printf("random seed: %d\n", random_seed);
+  srandom(random_seed);
 
 
   if (! start_blank) {
@@ -639,10 +746,27 @@ int main(int argc, char *argv[])
     }
 
     if (do_render) {
-      while (do_seed) {
-        seed(pixbuf, W, H, random() % (W>>1), random() % (H>>1), 0x80000000, apex_r);
-        do_seed --;
+      if (seed_key_down) {
+        static int seed_slew = 0;
+        if ((++ seed_slew) > 1) {
+          seed_slew = 0;
+          do_seed ++;
+        }
       }
+
+      while (do_seed) {
+        do_seed --;
+        int seedx = random() % W;
+        int seedy = random() % H;
+        seed(pixbuf, W, H, seedx, seedy, 0x80000000, apex_r);
+        if ((symm == symm_x) || (symm == symm_xy))
+          seed(pixbuf, W, H, W - seedx, seedy, 0x80000000, apex_r);
+        if ((symm == symm_y) || (symm == symm_xy))
+          seed(pixbuf, W, H, seedx, H - seedy, 0x80000000, apex_r);
+        if (symm == symm_point)
+          seed(pixbuf, W, H, W - seedx, H - seedy, 0x80000000, apex_r);
+      }
+
       pixel_t *tmp = swapbuf;
       swapbuf = pixbuf;
       pixbuf = tmp;
@@ -667,13 +791,18 @@ int main(int argc, char *argv[])
       if (symm == symm_point)
         mirror_p(pixbuf, W, H);
 
-      render(screen, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift);
+      char *out_path = NULL;
+      if (out_dir) {
+        static char path[1000];
+        snprintf(path, 999, "%s/out%05d.png", out_dir, frames_rendered);
+        out_path = path;
+      }
+      render(screen, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift, out_path);
       frames_rendered ++;
     }
     else
       SDL_Delay(5);
 
-    float underdampen_was = underdampen;
     SDL_Event event;
     while (SDL_PollEvent(&event)) 
     {
@@ -727,6 +856,9 @@ int main(int argc, char *argv[])
             default:
               break;
           }
+
+          printf("underdampen=%f  wavy_amp=%f  symm=%s  apex_r=%d\n",
+            underdampen, wavy_amp, symmetry_name[symm], apex_r);
           break;
 
         case SDL_KEYUP:
@@ -741,10 +873,6 @@ int main(int argc, char *argv[])
       }
     }
 
-    if (symm != symm_was) {
-      printf("\n%s (Remember to hit 's' as needed)\n", symmetry_name[symm]);
-      symm_was = symm;
-    }
   }
   printf("\n");
   SDL_Quit();
