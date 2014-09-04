@@ -5,6 +5,7 @@
  * License v3.
  */
 
+#include <fftw3.h>
 #include <math.h>
 #include <time.h>
 #include <stdlib.h>
@@ -17,13 +18,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <png.h>
 #include <stdint.h>
+
+#include "dope.h"
 
 #define PALETTE_LEN_BITS 12
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
+#define SEED_VAL (0.5 * PALETTE_LEN)
 
-typedef Uint32 pixel_t;
+typedef double pixel_t;
 
 typedef struct {
   Uint32 *colors;
@@ -172,80 +175,153 @@ void make_palette(palette_t *palette, int n_colors,
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
 
-#define SUM_RANGE_BITS 8
 
-Uint32 rectangle_sum(pixel_t *pixbuf, int W, int H,
-                     int x_start, int y_start,
-                     int x_end, int y_end,
-                     bool wrap_borders) {
-  Uint32 sum = 0;
+int W = 320;
+int H = 200;
+pixel_t *pixbuf = NULL;
+pixel_t *apex = NULL;
+fftw_complex *pixbuf_f;
+fftw_plan plan_backward;
+fftw_plan plan_forward;
+fftw_complex *apex_f;
+fftw_plan plan_apex;
 
-  if (x_start < 0) {
-    if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, W - (-x_start), y_start, W, y_end, wrap_borders);
-    x_start = 0;
-  }
-  if (x_end > W) {
-    if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, 0, y_start, x_end - W, y_end, wrap_borders);
-    x_end = W;
-  }
+void make_apex(double apex_r, double burn_factor);
 
-  if (y_start < 0) {
-    if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, x_start, H - (-y_start), x_end, H, wrap_borders);
-    y_start = 0;
-  }
-  if (y_end > H) {
-    if (wrap_borders)
-      sum += rectangle_sum(pixbuf, W, H, x_start, 0, x_end, y_end - H, wrap_borders);
-    y_end = H;
-  }
+void fft_init(void) {
+  int half_H = (H / 2) + 1;
+  int x;
+  int y;
 
-  pixel_t *bufpos = &pixbuf[x_start + W*y_start];
-  int pitch = W - (x_end - x_start);
-  int xpos, ypos;
-  for (ypos = y_start; ypos < y_end; ypos ++) {
-    for (xpos = x_start; xpos < x_end; xpos ++) {
-      sum += (*bufpos) >> SUM_RANGE_BITS;
-      bufpos ++;
+  pixbuf = (double *) malloc_check(sizeof(double) * W * H);
+  for(x = 0; x < W; x++)
+  {
+    for(y = 0; y < H; y++)
+    {
+#if 1
+      pixbuf[x*H+y] =  ( double ) rand ( ) / ( RAND_MAX );
+#else
+      pixbuf[x*H+y] =  0;
+#endif
     }
-    bufpos += pitch;
   }
-  return sum;
+  pixbuf[(H/2) + (W/2)*H] = 1;
+  pixbuf[(H/2)+3 + (W/2 + 3)*H] = 1;
+  pixbuf[10 + (20)*H] = 1;
+  pixbuf[H-3 + (W-3)*H] = 1;
+
+  y = W * H;
+  for (x = 0; x < y; x++) {
+    pixbuf[x] *= PALETTE_LEN -10;
+  }
+
+  apex = (double*)malloc_check(sizeof(double) * W * H);
+  apex_f = fftw_malloc(sizeof(fftw_complex) * W * half_H);
+  plan_apex = fftw_plan_dft_r2c_2d(W, H, apex, apex_f, FFTW_ESTIMATE);
+
+  pixbuf_f = fftw_malloc(sizeof(fftw_complex) * W * half_H);
+  plan_forward = fftw_plan_dft_r2c_2d(W, H, pixbuf, pixbuf_f, FFTW_ESTIMATE);
+  plan_backward = fftw_plan_dft_c2r_2d(W, H, pixbuf_f, pixbuf, FFTW_ESTIMATE);
+
+  make_apex(8.01, 1.005);
 }
 
-Uint32 surrounding_sum(pixel_t *pixbuf, const int W, const int H,
-                       const int x, const int y, const int apex_r,
-                       bool wrap_borders) {
-  int x_start = x - apex_r;
-  int y_start = y - apex_r;
-  int wh = 2 * apex_r + 1;
-  int x_end = x_start + wh;
-  int y_end = y_start + wh;
-  return rectangle_sum(pixbuf, W, H, x_start, y_start, x_end, y_end,
-                       wrap_borders);
+void fft_destroy(void) {
+  fftw_destroy_plan(plan_apex);
+  fftw_destroy_plan(plan_forward);
+  fftw_destroy_plan(plan_backward);
+  free(pixbuf);
+  free(apex);
+  fftw_free(pixbuf_f);
+  fftw_free(apex_f);
+  pixbuf = NULL;
+  apex = NULL;
 }
 
-void burn(pixel_t *srcbuf, pixel_t *destbuf, const int W, const int H,
-          const int apex_r, float divider, const int palette_len,
-          bool wrap_borders,
-          int rect_x, int rect_y, int rect_w, int rect_h) {
+void make_apex(double apex_r, double burn_factor) {
   int x, y;
-  int x_end = rect_x + rect_w;
-  int y_end = rect_y + rect_h;
-  Uint64 sum;
-  int pitch = W - rect_w;
-  pixel_t *destpos = destbuf + (rect_y * W) + rect_x;
-  for (y = rect_y; y < y_end; y++) {
-    for (x = rect_x; x < x_end; x++) {
-      sum = surrounding_sum(srcbuf, W, H, x, y, apex_r, wrap_borders) / divider;
 
-      *(destpos ++) = sum << SUM_RANGE_BITS;
+  double apex_sum = 0;
+  for(x = 0; x < W; x++)
+  {
+    for(y = 0; y < H; y++)
+    {
+      double dist = 0;
+      int xx = x;
+      int yy = y;
+      if (xx >= W/2)
+        xx = W - x;
+      if (yy >= H/2)
+        yy = H - y;
+      dist = sqrt(xx*xx + yy*yy);
+      double v = apex_r - dist;
+      if (v < 0)
+        v = 0;
+#if 0
+      if (x == 2 && y == 1)
+        v = 302.1;
+#endif
+
+#if 0
+      if (x == W / 2 && y == H / 2)
+        v = 850;
+#endif
+
+#if 0
+      if (x < W/2 || y > H / 2)
+        v = -v * 1.85;
+#endif
+#if 0
+      if (x == W/3-1 && y == H/3-1)
+        v = 200;
+      if (x == W/3 && y == H/3)
+        v = -200;
+#endif
+      apex_sum += v;
+      apex[x*H+y] = v;
     }
-    destpos += pitch;
   }
+
+  double apex_mul = (burn_factor / (W*H)) / apex_sum;
+
+  y = W * H;
+  for (x = 0; x < y; x++) {
+    apex[x] *= apex_mul;
+  }
+  fftw_execute(plan_apex);
 }
+
+
+void burn(void) {
+  int x;
+  int y;
+  int half_H = (H / 2) + 1;
+  fftw_execute(plan_forward);
+
+#if 1
+  // imaginary multiplication --> convolution of pixbuf with apex.
+  for (x = 0; x < W; x++) {
+    for (y = 0; y < half_H; y++) {
+      double *pf = pixbuf_f[x*half_H + y];
+      double *af = apex_f[x*half_H + y];
+      double a, b, c, d;
+      a = pf[0]; b = pf[1];
+      c = af[0]; d = af[1];
+#if 1
+      pf[0] = (a*c - b*d);
+      pf[1] = (b*c + a*d);
+#else
+      double l = sqrt(c*c + d*d);
+      pf[0] *= l;
+      pf[1] *= l;
+#endif
+    }
+  }
+#endif
+
+  fftw_execute(plan_backward);
+}
+
 
 void mirror_x(pixel_t *pixbuf, const int W, const int H) {
   int x, y;
@@ -301,8 +377,8 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 
 
 void render(SDL_Surface *screen, const int winW, const int winH,
-            palette_t *palette, pixel_t *pixbuf, const int W, const int H,
-            int multiply_pixels, int colorshift, FILE *out_stream, const char *png_out_path)
+            palette_t *palette, pixel_t *pixbuf, 
+            int multiply_pixels, int colorshift)
 {   
   // Lock surface if needed
   if (SDL_MUSTLOCK(screen)) 
@@ -316,89 +392,32 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   int mx, my;
   int pitch = screen->pitch / sizeof(Uint32) - winW;
 
-  FILE * png_fp;
-  png_structp png_ptr = NULL;
-  png_infop png_info = NULL;
-  png_byte ** png_row_pointers = NULL;
-  /* The following number is set by trial and error only. I cannot
-     see where it it is documented in the libpng manual.
-  */
-  const int png_pixel_size = 3;
-  const int png_depth = 8;
-
-  if (png_out_path) {
-    png_fp = fopen (png_out_path, "wb");
-    if (! png_fp) {
-      fprintf(stderr, "Cannot open for writing: '%s'", png_out_path);
-      return;
-    }
-
-    png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (png_ptr == NULL) {
-        goto png_create_write_struct_failed;
-    }
-    
-    png_info = png_create_info_struct (png_ptr);
-    if (png_info == NULL) {
-        goto png_create_info_struct_failed;
-    }
-    
-    /* Set up error handling. */
-
-    if (setjmp (png_jmpbuf (png_ptr))) {
-        goto png_failure;
-    }
-    
-    /* Set image attributes. */
-
-    png_set_IHDR (png_ptr,
-                  png_info,
-                  winW,
-                  winH,
-                  png_depth,
-                  PNG_COLOR_TYPE_RGB,
-                  PNG_INTERLACE_NONE,
-                  PNG_COMPRESSION_TYPE_DEFAULT,
-                  PNG_FILTER_TYPE_DEFAULT);
-
-    png_row_pointers = png_malloc (png_ptr, winH * sizeof (png_byte *));
-  }
 
   Uint32 *screenpos = (Uint32*)(screen->pixels);
-  pixel_t *pixbufpos = pixbuf;
+  pixel_t *pixbufpos;
   int winy = 0;
   for (y = 0; y < H; y++) {
-    pixel_t *pixbuf_y_pos = pixbufpos;
+    pixel_t *pixbuf_y_pos = pixbuf + y;
 
     for (my = 0; my < multiply_pixels; my ++, winy++) {
-      png_byte *png_row;
-      if (png_out_path) {
-        png_row = png_malloc (png_ptr, sizeof (uint8_t) * winW * png_pixel_size);
-        png_row_pointers[winy] = png_row;
-      }
-
       pixbufpos = pixbuf_y_pos;
       int winx = 0;
       for (x = 0; x < W; x++) {
-        Uint32 col = (*pixbufpos) + (colorshift << (32 - PALETTE_LEN_BITS));
-        col >>= 32 - PALETTE_LEN_BITS;
+        pixel_t pix = *pixbufpos;
+        if (pix >= palette->len) {
+          pix -= palette->len;
+          *pixbufpos = pix;
+        }
+        unsigned int col = (unsigned int)pix + colorshift;
+        col %= palette->len;
+        
         Uint32 raw = palette->colors[col];
-        Uint8 r, g, b;
-
-        if (png_out_path)
-          SDL_GetRGB(raw, screen->format, &r, &g, &b);
-
+        
         for (mx = 0; mx < multiply_pixels; mx++, winx++) {
           *screenpos = raw;
           screenpos ++;
-
-          if (png_out_path) {
-            *png_row++ = r;
-            *png_row++ = g;
-            *png_row++ = b;
-          }
         }
-        pixbufpos ++;
+        pixbufpos += H;
       }
       screenpos += pitch;
     }
@@ -417,33 +436,12 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   }
 #endif
 
-  if (out_stream) {
-    fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
-  }
-
   // Unlock if needed
   if (SDL_MUSTLOCK(screen)) 
     SDL_UnlockSurface(screen);
 
   // Tell SDL to update the whole screen
   SDL_UpdateRect(screen, 0, 0, winW, winH);
-
-  if (png_out_path) {
-    png_init_io (png_ptr, png_fp);
-    png_set_rows (png_ptr, png_info, png_row_pointers);
-    png_write_png (png_ptr, png_info, PNG_TRANSFORM_IDENTITY, NULL);
-
-    for (y = 0; y < winH; y++) {
-        png_free (png_ptr, png_row_pointers[y]);
-    }
-    png_free (png_ptr, png_row_pointers);
-    
- png_failure:
- png_create_info_struct_failed:
-    png_destroy_write_struct (&png_ptr, &png_info);
- png_create_write_struct_failed:
-    fclose (png_fp);
-  }
 }
 
 void seed1(pixel_t *pixbuf, const int W, const int H, int x, int y,
@@ -453,7 +451,7 @@ void seed1(pixel_t *pixbuf, const int W, const int H, int x, int y,
   pixbuf[x + y * W] += val;
 }
 
-void seed(pixel_t *pixbuf, const int W, const int H, int x, int y,
+void seed(pixel_t *pixbuf, const int H, const int W, int y, int x,
           pixel_t val, int apex_r) {
   int rx, ry;
   for (ry = -apex_r; ry <= apex_r; ry++) {
@@ -463,18 +461,34 @@ void seed(pixel_t *pixbuf, const int W, const int H, int x, int y,
   }
 }
 
+void seed_image(int x, int y, char *img, int w, int h) {
+  pixel_t *pixbuf_pos = pixbuf + y * W + h;
+  pixel_t *pixbuf_end = pixbuf + W * H;
+  int pixbuf_pitch = W - w;
+
+  char *img_pos = img;
+  for (y = 0; y < h; y++) {
+    for (x = 0; (x < w) && (pixbuf_pos < pixbuf_end); x++) {
+      if (*img_pos) {
+        printf(".");
+        *pixbuf_pos = SEED_VAL;
+      }
+      img_pos ++;
+      pixbuf_pos ++;
+    }
+    pixbuf_pos += pixbuf_pitch;
+  }
+}
+
 
 int main(int argc, char *argv[])
 {
-  int W = 320;
-  int H = 240;
-  int multiply_pixels = 1;
-  int apex_r = 2;
-  float underdampen = .996;
+  int multiply_pixels = 2;
+  double apex_r = 8.01;
+  double burn_factor = 1.005;
   int frame_period = 70;
   bool usage = false;
   bool error = false;
-  bool wrap_borders = true;
   bool start_blank = false;
   symmetry_t symm = symm_x;
 
@@ -483,10 +497,9 @@ int main(int argc, char *argv[])
 
   char *out_stream_path = NULL;
   FILE *out_stream = NULL;
-  char *png_out_dir = NULL;
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:r:u:O:P:AbBh");
+    c = getopt(argc, argv, "a:g:m:p:r:u:O:P:ABh");
     if (c == -1)
       break;
    
@@ -520,11 +533,11 @@ int main(int argc, char *argv[])
         break;
 
       case 'a':
-        apex_r = atoi(optarg);
+        apex_r = atof(optarg);
         break;
 
       case 'u':
-        underdampen = atof(optarg);
+        burn_factor = atof(optarg);
         break;
 
       case 'r':
@@ -533,14 +546,6 @@ int main(int argc, char *argv[])
 
       case 'O':
         out_stream_path = optarg;
-        break;
-
-      case 'P':
-        png_out_dir = optarg;
-        break;
-
-      case 'b':
-        wrap_borders = false;
         break;
 
       case 'B':
@@ -584,13 +589,12 @@ int main(int argc, char *argv[])
 "           If zero, run as fast as possible. Default is %d.\n"
 "  -m N     Multiply each pixel N times in width and height, to give a larger\n"
 "           picture. This will also multiply the window size.\n"
-"  -a W     Set apex radius, i.e. the blur distance. Default is %d.\n"
+"  -a W     Set apex radius, i.e. the blur distance. Default is %.3f.\n"
 "  -u N.n   Set underdampening factor (decimal). Default is %.3f.\n"
 "           Reduces normal blur dampening by this factor.\n"
 "  -r seed  Supply a random seed to start off with.\n"
-"  -b       Assume zeros around borders. Default is to wrap around borders.\n"
 "  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
-, frame_period, apex_r, underdampen
+, frame_period, apex_r, burn_factor
 );
     if (error)
       return 1;
@@ -605,17 +609,17 @@ int main(int argc, char *argv[])
   }
 
   {
-    int was_apex_r = apex_r;
+    double was_apex_r = apex_r;
     int max_dim = max(W, H);
     apex_r = min(max_dim, apex_r);
     apex_r = max(1, apex_r);
     if (apex_r != was_apex_r) {
-      fprintf(stderr, "Invalid apex radius (-a). Forcing %d.", apex_r);
+      fprintf(stderr, "Invalid apex radius (-a %f). Forcing %f.", was_apex_r, apex_r);
     }
   }
 
   float minuscule = 1e-3;
-  if ((underdampen > -minuscule) && (underdampen < minuscule)) {
+  if ((burn_factor > -minuscule) && (burn_factor < minuscule)) {
     fprintf(stderr, "Underdampening too close to zero (-u). Limit is %f.\n",
         minuscule);
     exit(-1);
@@ -645,13 +649,6 @@ int main(int argc, char *argv[])
     fwrite(&ww, sizeof(ww), 1, out_stream);
     fwrite(&hh, sizeof(hh), 1, out_stream);
 #endif
-  }
-
-  if (png_out_dir) {
-    int err = mkdir(png_out_dir, 0777);
-    if (err) {
-      fprintf(stderr, "cannot make dir: %s\n", png_out_dir);
-    }
   }
 
 
@@ -703,17 +700,10 @@ int main(int argc, char *argv[])
                palette_points, n_palette_points,
                screen->format);
 
-  pixel_t *buf1 = malloc_check(W * H * sizeof(pixel_t));
-  pixel_t *buf2 = malloc_check(W * H * sizeof(pixel_t));
-  bzero(buf1, W * H * sizeof(pixel_t));
-  bzero(buf2, W * H * sizeof(pixel_t));
-
-  pixel_t *pixbuf = buf1;
-  pixel_t *swapbuf = buf2;
-
   printf("random seed: %d\n", random_seed);
   srandom(random_seed);
 
+  fft_init();
 
   if (! start_blank) {
     int i, j;
@@ -721,8 +711,15 @@ int main(int argc, char *argv[])
     j *= j;
     j = W * H / j;
     for (i = 0; i < j; i ++) {
-      seed(pixbuf, W, H, random() % (W), random() % (H), 0x80000000, apex_r);
+      seed(pixbuf, W, H, random() % (W), random() % (H), SEED_VAL, apex_r);
     }
+  }
+
+  if (0)
+  {
+    int x;
+    for (x = 0; x < (W*H); x++)
+      printf("%f ", pixbuf[x]);
   }
 
   int last_ticks = SDL_GetTicks() - frame_period;
@@ -730,11 +727,13 @@ int main(int argc, char *argv[])
   int do_seed = 0;
 
   int frames_rendered = 0;
-  int cc = 0;
   float wavy = 0;
   float wavy_amp = .006;
   int colorshift = 0;
   bool running = true;
+  bool do_stop = false;
+  bool do_go = false;
+  bool do_wavy = false;
 
   while (running)
   {
@@ -744,15 +743,9 @@ int main(int argc, char *argv[])
     wavy = sin(t);
     colorshift = palette.len * (0.5 + 0.5 * cos(t*M_PI/50));
     
-    float dampen = underdampen + (wavy_amp * wavy);
-    if ((++cc) > 40) {
-      //printf("%.5f + %.5f*%.1f = %.5f  apex_r=%3d  colorshift=%6d/%6d    \r", underdampen, wavy_amp, wavy, dampen, apex_r, colorshift, palette.len);
-      //fflush(stdout);
-      cc = 0;
-    }
-
-    float divider = 1 + 2 * apex_r;
-    divider *= divider * dampen;
+    float use_burn = burn_factor;
+    if (do_wavy)
+      use_burn += (wavy_amp * wavy);
 
     if (frame_period < 1)
       do_render = true;
@@ -764,60 +757,85 @@ int main(int argc, char *argv[])
       }
     }
 
+
     if (do_render) {
-      if (seed_key_down) {
-        static int seed_slew = 0;
-        if ((++ seed_slew) > 1) {
-          seed_slew = 0;
-          do_seed ++;
-        }
+      static bool stopped = false;
+      if (do_stop) {
+        stopped = true;
+        do_stop = false;
+        // and do just one rendering
       }
-
-      while (do_seed) {
-        do_seed --;
-        int seedx = random() % W;
-        int seedy = random() % H;
-        seed(pixbuf, W, H, seedx, seedy, 0x80000000, apex_r);
-        if ((symm == symm_x) || (symm == symm_xy))
-          seed(pixbuf, W, H, W - seedx, seedy, 0x80000000, apex_r);
-        if ((symm == symm_y) || (symm == symm_xy))
-          seed(pixbuf, W, H, seedx, H - seedy, 0x80000000, apex_r);
-        if (symm == symm_point)
-          seed(pixbuf, W, H, W - seedx, H - seedy, 0x80000000, apex_r);
-      }
-
-      pixel_t *tmp = swapbuf;
-      swapbuf = pixbuf;
-      pixbuf = tmp;
-
-      int ww = W;
-      int hh = H;
-      if ((symm == symm_x) || (symm == symm_xy))
-        ww = W - (W >> 1);
-      if ((symm == symm_y) || (symm == symm_xy) || (symm == symm_point))
-        hh = H - (H >> 1);
-
-      burn(swapbuf, pixbuf, W, H, apex_r, divider, palette.len, wrap_borders,
-           0, 0, ww, hh);
-
-      if (symm == symm_x)
-        mirror_x(pixbuf, W, H);
       else
-      if (symm == symm_xy)
-        mirror_x(pixbuf, W, H - (H >> 1));
-      if ((symm == symm_y) || (symm == symm_xy))
-        mirror_y(pixbuf, W, H);
-      if (symm == symm_point)
-        mirror_p(pixbuf, W, H);
-
-      char *png_out_path = NULL;
-      if (png_out_dir) {
-        static char path[1000];
-        snprintf(path, 999, "%s/out%05d.png", png_out_dir, frames_rendered);
-        png_out_path = path;
+      if (do_go) {
+        stopped = false;
+        do_go = false;
       }
-      render(screen, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift, out_stream, png_out_path);
+      else
+      if (stopped)
+        do_render = false;
+
+        if (seed_key_down) {
+          static int seed_slew = 0;
+          if ((++ seed_slew) > 1) {
+            seed_slew = 0;
+            do_seed ++;
+          }
+        }
+
+        while (do_seed) {
+          do_seed --;
+          int seedx = random() % W;
+          int seedy = random() % H;
+          seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
+          if ((symm == symm_x) || (symm == symm_xy))
+            seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
+          if ((symm == symm_y) || (symm == symm_xy))
+            seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
+          if (symm == symm_point)
+            seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
+        }
+
+#if 0
+        int ww = W;
+        int hh = H;
+        if ((symm == symm_x) || (symm == symm_xy))
+          ww = W - (W >> 1);
+        if ((symm == symm_y) || (symm == symm_xy) || (symm == symm_point))
+          hh = H - (H >> 1);
+#endif
+
+        burn();
+#if 1
+        if (symm == symm_x)
+          mirror_y(pixbuf, H, W);
+        else
+        if (symm == symm_xy)
+          mirror_y(pixbuf, H, W);
+        if ((symm == symm_y) || (symm == symm_xy))
+          mirror_x(pixbuf, H, W);
+        if (symm == symm_point)
+          mirror_p(pixbuf, H, W);
+#endif
+
+      if (do_render) {
+        render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift);
+      }
+
+      if (out_stream) {
+        fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
+      }
+
       frames_rendered ++;
+
+      static double was_apex_r = 0;
+      static double was_burn = 0;
+
+      if ((was_apex_r != apex_r) || (was_burn != use_burn)) {
+        make_apex(apex_r, use_burn);
+        was_apex_r = apex_r;
+        was_burn = use_burn;
+      }
+
     }
     else
       SDL_Delay(5);
@@ -839,10 +857,10 @@ int main(int argc, char *argv[])
               break;
 
             case SDLK_RIGHT:
-              underdampen += .0002;
+              burn_factor += .0002;
               break;
             case SDLK_LEFT:
-              underdampen -= .0002;
+              burn_factor -= .0002;
               break;
             case SDLK_UP:
               wavy_amp += .0001;
@@ -864,32 +882,47 @@ int main(int argc, char *argv[])
               symm = (symm + 1) % SYMMETRY_KINDS;
               break;
 
-            case '+':
-            case '=':
-              if (apex_r < W)
-                apex_r ++;
+            case 't':
+              burn_factor = 1.005 - .006;
+              break;
+            case 'r':
+              burn_factor = 1.005 - .002;
+              break;
+            case 'e':
+              burn_factor = 1.005;
+              break;
+            case 'w':
+              burn_factor = 1.005 + .002;
+              break;
+            case 'q':
+              burn_factor = 1.005 + .006;
+              break;
+
+            case '~':
+              do_wavy = ! do_wavy;
               break;
 
             case '-':
-              if (apex_r > 1)
-                apex_r --;
+              apex_r = max(1.1, apex_r / 1.2);
               break;
 
-            case 't':
-              underdampen = .996 + .006;
+            case '+':
+            case '=':
+              apex_r = min(W, apex_r * 1.2);
               break;
-            case 'r':
-              underdampen = .996 + .002;
+
+            case '/':
+              do_go = true;
               break;
-            case 'e':
-              underdampen = .996;
+
+            case '.':
+              do_stop = true;
               break;
-            case 'w':
-              underdampen = .996 - .002;
+
+            case 'o':
+              seed_image(0, 0, dope_data, dope_width, dope_height);
               break;
-            case 'q':
-              underdampen = .996 - .006;
-              break;
+
 
             default:
 
@@ -900,8 +933,8 @@ int main(int argc, char *argv[])
           }
           }
 
-          printf("underdampen=%f  wavy_amp=%f  symm=%s  apex_r=%d\n",
-            underdampen, wavy_amp, symmetry_name[symm], apex_r);
+          printf("burn=%f  wavy_amp=%f  symm=%s  apex_r=%f\n",
+            burn_factor, wavy_amp, symmetry_name[symm], apex_r);
           break;
 
         case SDL_KEYUP:
@@ -920,6 +953,13 @@ int main(int argc, char *argv[])
 
   printf("\n");
   printf("%d frames rendered\n", frames_rendered);
+  if (out_stream) {
+    fclose(out_stream);
+    out_stream = NULL;
+    printf("suggestion:\n"
+        "ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgb32 -s %dx%d -i %s  -vcodec libx264 -b 20000k %s.avi\n", W, H, out_stream_path, out_stream_path);
+  }
+  fft_destroy();
   SDL_Quit();
   return 0;
 }
