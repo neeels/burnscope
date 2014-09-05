@@ -10,6 +10,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <SDL/SDL.h>
+#include <SDL/SDL_thread.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -189,7 +190,7 @@ fftw_plan plan_forward;
 fftw_complex *apex_f;
 fftw_plan plan_apex;
 
-void make_apex(double apex_r, double burn_factor);
+void make_apex(double apex_r, double burn_factor, char apex_opt);
 
 void fft_init(void) {
   int x;
@@ -222,7 +223,7 @@ void fft_init(void) {
   plan_forward = fftw_plan_dft_r2c_2d(H, W, pixbuf, pixbuf_f, FFTW_ESTIMATE);
   plan_backward = fftw_plan_dft_c2r_2d(H, W, pixbuf_f, pixbuf, FFTW_ESTIMATE);
 
-  make_apex(8.01, 1.005);
+  make_apex(8.01, 1.005, 0);
 }
 
 void fft_destroy(void) {
@@ -237,49 +238,61 @@ void fft_destroy(void) {
   apex = NULL;
 }
 
-void make_apex(double apex_r, double burn_factor) {
+void make_apex(double apex_r, double burn_factor, char apex_opt) {
   int x, y;
+  double v;
 
+  bzero(apex, W*H*sizeof(pixel_t));
+
+  apex_r = min(apex_r, min(W/2, H/2));
+  
   double apex_sum = 0;
   double apex_r2 = apex_r * apex_r;
-  for(x = 0; x < W; x++)
+  v = 1;
+  for(x = 0; x < apex_r; x++)
   {
-    for(y = 0; y < H; y++)
+    for(y = 0; y < apex_r; y++)
     {
-      double dist = 0;
-      int xx = x;
-      int yy = y;
-      if (xx >= W/2)
-        xx = W - x;
-      if (yy >= H/2)
-        yy = H - y;
-      dist = xx*xx + yy*yy;
-      double v = apex_r2 - dist;
+      v = apex_r2 - (x*x + y*y);
       if (v < 0)
         v = 0;
-#if 0
-      if (x == 2 && y == 1)
-        v = 302.1;
-#endif
-
-#if 0
-      if (x == W / 2 && y == H / 2)
-        v = 850;
-#endif
-
-#if 0
-      if (x < W/2 || y > H / 2)
-        v = -v * 1.85;
-#endif
-#if 0
-      if (x == W/3-1 && y == H/3-1)
-        v = 200;
-      if (x == W/3 && y == H/3)
-        v = -200;
-#endif
-      apex_sum += v;
       apex[x+y*W] = v;
+      apex_sum += v;
+      if ((x > 0) && (y > 0)) {
+        apex[(W - x)+y*W] = v;
+        apex_sum += v;
+        apex[(W - x)+(H - y)*W] = v;
+        apex_sum += v;
+        apex[x+(H - y)*W] = v;
+        apex_sum += v;
+      }
+
     }
+  }
+
+
+  if (false && apex_opt) {
+    switch(apex_opt) {
+      default:
+        break;
+
+      case 1:
+        x = 1;
+        y = 1;
+        v = 10;
+        break;
+
+      case 2:
+        x = W-1;
+        y = H-1;
+        v = 10;
+        break;
+
+    }
+
+    apex_sum -= apex[x + y * W];
+    apex[x + y * W] = v;
+    apex_sum += v;
   }
 
   double apex_mul = (burn_factor / (W*H)) / apex_sum;
@@ -289,27 +302,7 @@ void make_apex(double apex_r, double burn_factor) {
     apex[x] *= apex_mul;
   }
   fftw_execute(plan_apex);
-}
-
-
-void burn(void) {
-  int x;
-  int y;
-  int half_W = (W / 2) + 1;
-  fftw_execute(plan_forward);
-
-  // complex multiplication --> convolution of pixbuf with apex.
-  for (x = 0; x < H*half_W; x++) {
-    double *pf = pixbuf_f[x];
-    double *af = apex_f[x];
-    double a, b, c, d;
-    a = pf[0]; b = pf[1];
-    c = af[0]; d = af[1];
-    pf[0] = (a*c - b*d);
-    pf[1] = (b*c + a*d);
-  }
-
-  fftw_execute(plan_backward);
+  printf("%f %f\n",  apex_f[0][0],apex_f[0][1]);
 }
 
 
@@ -360,8 +353,13 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
   pos_to = pixbuf + (H - y_fold) * W;
 
   while (pos_to < end) {
-    for (x = 0; x < W; x++)
-      *(pos_to++) = *(pos_from--);
+    for (x = 0; x < W; x++) {
+      pixel_t v = min(*pos_to, *pos_from);
+      *pos_to = v;
+      *pos_from = v;
+      pos_to++;
+      pos_from--;
+    }
   }
 }
 
@@ -470,23 +468,67 @@ void seed_image(int x, int y, char *img, int w, int h) {
   }
 }
 
+volatile bool running = true;
+volatile int frames_rendered = 0;
+int frame_period = 40;
+
+SDL_Surface *screen;
+int winW;
+int winH;
+palette_t palette;
+int multiply_pixels = 2;
+int colorshift = 0;
+FILE *out_stream = NULL;
+
+SDL_sem *please_render;
+SDL_sem *rendering_done;
+
+int render_thread(void *arg) {
+
+  int last_ticks = SDL_GetTicks() - frame_period;
+
+  while (1) {
+    SDL_SemWait(please_render);
+    if (! running)
+      break;
+
+    while (frame_period) {
+      int elapsed = SDL_GetTicks() - last_ticks;
+      if (elapsed > frame_period) {
+        last_ticks += frame_period * (elapsed / frame_period);
+        break;
+      }
+      SDL_Delay(1);
+    }
+
+    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift);
+
+    SDL_SemPost(rendering_done);
+
+    if (out_stream) {
+      fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
+    }
+
+    frames_rendered ++;
+  }
+
+  return 0;
+}
 
 int main(int argc, char *argv[])
 {
-  int multiply_pixels = 2;
   double apex_r = 8.01;
   double burn_factor = 1.005;
-  int frame_period = 70;
   bool usage = false;
   bool error = false;
   bool start_blank = false;
   symmetry_t symm = symm_none;
+  char apex_opt = 0;
 
   int c;
   int random_seed = time(NULL);
 
   char *out_stream_path = NULL;
-  FILE *out_stream = NULL;
 
   while (1) {
     c = getopt(argc, argv, "a:g:m:p:r:u:O:P:ABh");
@@ -615,8 +657,8 @@ int main(int argc, char *argv[])
     exit(-1);
   }
 
-  int winW = W;
-  int winH = H;
+  winW = W;
+  winH = H;
 
   if (multiply_pixels > 1) {
     winW *= multiply_pixels;
@@ -642,7 +684,6 @@ int main(int argc, char *argv[])
   }
 
 
-  SDL_Surface *screen;
 
   if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 ) 
   {
@@ -685,7 +726,6 @@ int main(int argc, char *argv[])
   };
 #endif
 
-  palette_t palette;
   make_palette(&palette, PALETTE_LEN,
                palette_points, n_palette_points,
                screen->format);
@@ -712,44 +752,30 @@ int main(int argc, char *argv[])
       printf("%f ", pixbuf[x]);
   }
 
-  int last_ticks = SDL_GetTicks() - frame_period;
   bool seed_key_down = false;
   int do_seed = 0;
 
-  int frames_rendered = 0;
   float wavy = 0;
   float wavy_amp = .006;
-  int colorshift = 0;
-  bool running = true;
   bool do_stop = false;
   bool do_go = false;
   bool do_wavy = false;
   bool do_stutter = false;
+  float colorshift_phase_want = 0;
+  float colorshift_phase = 0;
+  double slow_burn_factor = 1.005;
+  symmetry_t was_symm = symm_none;
 
+  please_render = SDL_CreateSemaphore(0);
+  rendering_done = SDL_CreateSemaphore(0);
+
+  SDL_Thread *render_thread_token = SDL_CreateThread(render_thread, NULL);
+
+  fftw_execute(plan_forward);
   while (running)
   {
-    bool do_render = false;
-
-    float t = (float)frames_rendered / 100.;
-    wavy = sin(t);
-    colorshift = palette.len * (0.5 + 0.5 * cos(t*M_PI/50));
-    
-    float use_burn = burn_factor;
-    if (do_wavy)
-      use_burn += (wavy_amp * wavy);
-
-    if (frame_period < 1)
-      do_render = true;
-    else {
-      int elapsed = SDL_GetTicks() - last_ticks;
-      if (elapsed > frame_period) {
-        last_ticks += frame_period * (elapsed / frame_period);
-        do_render = true;
-      }
-    }
-
-
-    if (do_render) {
+    bool do_calc = true;
+    {
       static bool stopped = false;
       if (do_stop) {
         stopped = true;
@@ -763,207 +789,306 @@ int main(int argc, char *argv[])
       }
       else
       if (stopped)
-        do_render = false;
-
-      bool do_calc = true;
+        do_calc = false;
 
       if (do_stutter) {
         static char stutter_count = 0;
-        if ((stutter_count++) > 2)
+        if ((stutter_count++) > 1)
           stutter_count = 0;
         else
           do_calc = false;
       }
 
-      if (do_calc) {
-        if (seed_key_down) {
-          static int seed_slew = 0;
-          if ((++ seed_slew) > 1) {
-            seed_slew = 0;
-            do_seed ++;
-          }
-        }
+    }
 
-        while (do_seed) {
-          do_seed --;
-          int seedx = random() % W;
-          int seedy = random() % H;
-          seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
-          if ((symm == symm_x) || (symm == symm_xy))
-            seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
+
+    if (do_calc) {
+      float t = (float)frames_rendered / 100.;
+      wavy = sin(t);
+      if (colorshift_phase_want != colorshift_phase) {
+        colorshift_phase += (colorshift_phase_want - colorshift_phase) / 15;
+      }
+      colorshift = palette.len * (0.5 + 0.5 * cos((t+colorshift_phase)*M_PI/50));
+      
+      double use_burn = burn_factor;
+      if (do_wavy)
+        use_burn += (wavy_amp * wavy);
+
+      double diff = use_burn - slow_burn_factor;
+      if (diff > .0001)
+        diff = .0001;
+      else
+      if (diff < -.0001)
+        diff = -.0001;
+      slow_burn_factor += diff;
+
+
+      if (seed_key_down) {
+        static int seed_slew = 0;
+        if ((++ seed_slew) > 1) {
+          seed_slew = 0;
+          do_seed ++;
+        }
+      }
+
+      {
+        if (was_symm != symm) {
+          was_symm = symm;
+          if (symm == symm_x)
+            mirror_x(pixbuf, W, H);
+          else
+          if (symm == symm_xy)
+            mirror_x(pixbuf, W, H);
           if ((symm == symm_y) || (symm == symm_xy))
-            seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
+            mirror_y(pixbuf, W, H);
           if (symm == symm_point)
-            seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
+            mirror_p(pixbuf, W, H);
         }
+      }
 
+      int x;
+      int half_W = (W / 2) + 1;
+      fftw_execute(plan_forward);
 
-        burn();
+      // complex multiplication --> convolution of pixbuf with apex.
+      for (x = 0; x < H*half_W; x++) {
+        double *pf = pixbuf_f[x];
+        double *af = apex_f[x];
+        double a, b, c, d;
+        a = pf[0]; b = pf[1];
+        c = af[0]; d = af[1];
+        pf[0] = (a*c - b*d);
+        pf[1] = (b*c + a*d);
+      }
 
-        if (symm == symm_x)
-          mirror_x(pixbuf, W, H);
-        else
-        if (symm == symm_xy)
-          mirror_x(pixbuf, W, H);
+      fftw_execute(plan_backward);
+
+      while (do_seed) {
+        do_seed --;
+        int seedx = random() % W;
+        int seedy = random() % H;
+        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
+        if ((symm == symm_x) || (symm == symm_xy))
+          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
         if ((symm == symm_y) || (symm == symm_xy))
-          mirror_y(pixbuf, W, H);
+          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
         if (symm == symm_point)
-          mirror_p(pixbuf, W, H);
-      }
-
-      if (do_render) {
-        render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift);
-      }
-
-      if (out_stream) {
-        fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
-      }
-
-      frames_rendered ++;
-
-      static double was_apex_r = 0;
-      static double was_burn = 0;
-
-      if ((was_apex_r != apex_r) || (was_burn != use_burn)) {
-        make_apex(apex_r, use_burn);
-        was_apex_r = apex_r;
-        was_burn = use_burn;
+          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
       }
 
     }
-    else
-      SDL_Delay(5);
 
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) 
+    SDL_SemPost(please_render);
+
     {
-      switch (event.type) 
+      static double was_apex_r = 0;
+      static double was_burn = 0;
+      static char was_apex_opt = 0;
+
+      if ((was_apex_r != apex_r) || (was_burn != slow_burn_factor) || (was_apex_opt != apex_opt)) {
+        make_apex(apex_r, slow_burn_factor, apex_opt);
+        was_apex_r = apex_r;
+        was_burn = slow_burn_factor;
+        was_apex_opt = apex_opt;
+      }
+
+    }
+
+    bool events_polled = false;
+    bool waiting = true;
+    while (waiting && running) {
+      if (SDL_SemTryWait(rendering_done) == 0) {
+        waiting = false;
+        if (events_polled)
+          break;
+      }
+      
+      SDL_Event event;
+      while (SDL_PollEvent(&event)) 
       {
-        case SDL_KEYDOWN:
-          // If escape is pressed, return (and thus, quit)
+        switch (event.type) 
+        {
+          case SDL_KEYDOWN:
+            // If escape is pressed, return (and thus, quit)
 
 
-          {
-          int c = event.key.keysym.sym;
-          switch(c) {
-            case SDLK_ESCAPE:
-              running = false;
-              break;
+            {
+            int c = event.key.keysym.sym;
+            switch(c) {
+              case SDLK_ESCAPE:
+                running = false;
+                break;
 
-            case SDLK_RIGHT:
-              burn_factor += .0002;
-              break;
-            case SDLK_LEFT:
-              burn_factor -= .0002;
-              break;
-            case SDLK_UP:
-              wavy_amp += .0001;
-              break;
-            case SDLK_DOWN:
-              wavy_amp -= .0001;
-              break;
+              case SDLK_RIGHT:
+                burn_factor += .0002;
+                break;
+              case SDLK_LEFT:
+                burn_factor -= .0002;
+                break;
+              case SDLK_UP:
+                wavy_amp += .0001;
+                break;
+              case SDLK_DOWN:
+                wavy_amp -= .0001;
+                break;
 
-            case 's':
-              do_seed ++;
-              seed_key_down = true;
-              break;
+              case ' ':
+                do_seed ++;
+                seed_key_down = true;
+                break;
 
-            case 'b':
-              bzero(pixbuf, W * H * sizeof(pixel_t));
-              break;
+              case 'b':
+                bzero(pixbuf, W * H * sizeof(pixel_t));
+                break;
 
-            case 'm':
-              symm = (symm + 1) % SYMMETRY_KINDS;
-              break;
+              case 'm':
+                symm = (symm + 1) % SYMMETRY_KINDS;
+                break;
 
-            case 'q':
-              burn_factor -= .002;
-              break;
-            case 'w':
-              burn_factor -= .0003;
-              break;
-            case 'e':
-              burn_factor = (burn_factor + burn_factor + 1.005) / 3.;
-              break;
-            case 'r':
-              burn_factor += .0003;
-              break;
-            case 't':
-              burn_factor += .002;
-              break;
+              case '\\':
+                symm = symm_x;
+                was_symm = symm_none;
+                break;
 
-            case '`':
-              do_wavy = ! do_wavy;
-              break;
+              case '\'':
+                symm = symm_point;
+                was_symm = symm_none;
+                break;
 
-            case '-':
-              apex_r = max(0.5, apex_r / 1.1);
-              break;
+              case ';':
+                symm = symm_none;
+                break;
 
-            case '+':
-            case '=':
-              apex_r = min(W, apex_r * 1.1);
-              break;
+              case 'q':
+                burn_factor -= .002;
+                break;
+              case 'w':
+                burn_factor -= .0003;
+                break;
+              case 'e':
+                burn_factor = 1.005;
+                apex_r = 8.01 * min(W, H) / 240.;
+                break;
+              case 'r':
+                burn_factor += .0003;
+                break;
+              case 't':
+                burn_factor += .002;
+                break;
 
-            case '/':
-              do_go = true;
-              do_stutter = false;
-              break;
+              case '`':
+                do_wavy = ! do_wavy;
+                break;
 
-            case '.':
-              do_stop = true;
-              break;
+              case '-':
+                apex_r = max(0.5, apex_r / 1.1);
+                break;
 
-            case ',':
-              do_stutter = ! do_stutter;
-              do_go = true;
-              break;
+              case '+':
+              case '=':
+                apex_r = min(W, apex_r * 1.1);
+                break;
+
+              case '/':
+                do_go = true;
+                do_stutter = false;
+                break;
+
+              case '.':
+                do_stop = true;
+                break;
+
+              case ',':
+                do_stutter = ! do_stutter;
+                do_go = true;
+                break;
 
 #define drop_img(name)  seed_image(random() % (30 + W - name##_width), random() %(30 + H- name##_height), name##_data, name##_width, name##_height)
 
-            case 'u':
-              drop_img(human);
-              break;
+              case 'u':
+                drop_img(human);
+                break;
 
-            case 'i':
-              drop_img(kill);
-              break;
+              case 'i':
+                drop_img(kill);
+                break;
 
-            case 'p':
-              drop_img(dope);
-              break;
+              case 'p':
+                drop_img(dope);
+                break;
 
-            case 'o':
-              drop_img(shit);
-              break;
+              case 'o':
+                drop_img(shit);
+                break;
 
+              case 'a':
+                apex_opt = 0;
+                break;
 
-            default:
+              case 's':
+                apex_opt = 1;
+                break;
 
-              if ((c >= '1') && (c <= '9')) {
-                apex_r = 1 + c - '1';
-              }
-              break;
-          }
-          }
+              case 'd':
+                apex_opt = 2;
+                break;
 
-          printf("burn=%f  wavy=%s wavy_amp=%f  symm=%s  apex_r=%f  stutter=%s\n",
-            burn_factor, do_wavy? "on" : "off", wavy_amp, symmetry_name[symm], apex_r, do_stutter? "on":"off");
-          break;
+              case 'f':
+                apex_opt = 3;
+                break;
 
-        case SDL_KEYUP:
-          if (event.key.keysym.sym == 's') {
-            seed_key_down = false;
-          }
-          break;
+              case 'g':
+                apex_opt = 4;
+                break;
 
-        case SDL_QUIT:
-          running = false;
-          break;
+              case 'c':
+                colorshift_phase_want += 12;
+                break;
+
+              case '0':
+                apex_r += (float)min(W,H) / 48;
+                break;
+
+              case '1':
+                apex_r = 1;
+                break;
+
+              default:
+
+                if ((c >= '2') && (c <= '9')) {
+                  apex_r = ((float)min(W, H) / 240.) * (1 + c - '1');
+                }
+                break;
+            }
+            }
+
+            printf("burn=%f  wavy=%s wavy_amp=%f  symm=%s  apex_r=%f  stutter=%s\n",
+              slow_burn_factor, do_wavy? "on" : "off", wavy_amp, symmetry_name[symm], apex_r, do_stutter? "on":"off");
+            break;
+
+          case SDL_KEYUP:
+            if (event.key.keysym.sym == ' ') {
+              seed_key_down = false;
+            }
+            break;
+
+          case SDL_QUIT:
+            running = false;
+            break;
+        }
       }
-    }
+      events_polled = true;
 
+      if (waiting)
+        SDL_Delay(2);
+    }
   }
+
+  SDL_SemPost(please_render);
+  SDL_WaitThread(render_thread_token, NULL);
+
+  SDL_DestroySemaphore(please_render);
+  SDL_DestroySemaphore(rendering_done);
 
   printf("\n");
   printf("%d frames rendered\n", frames_rendered);
