@@ -868,16 +868,16 @@ int main(int argc, char *argv[])
 #define n_palette_points 11
   palette_point_t palette_points[n_palette_points] = {
     { 0./6, 1, 1, 1 },
-    { 0.5/6, 1, .9, 0 },
-    { 1./6, 1, .1, 1 },
-    { 1.5/6, 0, 0, 1 },
-    { 3./6, .5, 0, .7 },
-    { 3.5/6, 0, 1, .7 },
-    { 4.5/6, .2, .8, .2 },
-    { 4.8/6, 0, 0, 1 },
-    { 5.25/6, .8, .8, 0 },
-    { 5.55/6, .8, .2, 0.4 },
-    { 5.85/6, .0,.60,.50 },
+    { 0.5/6, 1, 0, 0 },
+    { 1./6, 0, .1, .5 },
+    { 1.5/6, .3, .3,1 },
+    { 3./6, 1, 1, 0 },
+    { 3.5/6, 0, 1, 1 },
+    { 4.5/6, 0, 0, 1 },
+    { 4.8/6, 1, 0, 0 },
+    { 5.25/6, 1, 1, 0 },
+    { 5.55/6, 1, .6, 0 },
+    { 5.85/6, .1,.0,0 },
   };
 #else
 #define n_palette_points 2
@@ -1328,7 +1328,7 @@ int main(int argc, char *argv[])
                   if (axis_val <= 0.01)
                     apex_r = 0.9 + 12 * (1 + axis_val);
                   else
-                    apex_r = 12.9 + (min(W,H)/5) * axis_val;
+                    apex_r = 12.9 + (min(W,H)/8) * axis_val;
                   do_print = true;
                   break;
                 case 1:
