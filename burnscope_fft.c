@@ -36,6 +36,7 @@ typedef double pixel_t;
 int n_images = 0;
 image_t *images = NULL;
 
+const float minuscule = 1e-3;
 
 typedef struct {
   Uint32 *colors;
@@ -248,8 +249,14 @@ void fft_destroy(void) {
 void make_apex(double apex_r, double burn_factor, char apex_opt) {
   int x, y;
 
-  apex_r = min(apex_r, min(W/2, H/2));
+  apex_r = min(apex_r, min(W/2, H/2)-2);
 
+  if (fabs(burn_factor) < minuscule) {
+    if (burn_factor < 0)
+      burn_factor = -minuscule;
+    else
+      burn_factor = minuscule;
+  }
   
   double apex_sum = 0;
   double apex_r2 = apex_r * apex_r;
@@ -488,7 +495,12 @@ void render(SDL_Surface *screen, const int winW, const int winH,
       for (x = 0; x < W; x++) {
         pixel_t pix = *pixbufpos;
         if (pix >= palette->len) {
-          pix -= palette->len * (int)(pix / palette->len);
+          pix -= palette->len * (int)(pix) / palette->len;
+          *pixbufpos = pix;
+        }
+        else
+        if (pix < 0.001) {
+          pix += palette->len * (1 + (int)(-pix) / palette->len);
           *pixbufpos = pix;
         }
         unsigned int col = (unsigned int)pix + colorshift;
@@ -563,7 +575,10 @@ void seed_image(int x, int y, pixel_t *img, int w, int h) {
 
 volatile bool running = true;
 volatile int frames_rendered = 0;
-int frame_period = 40;
+
+volatile int avg_frame_period = 0;
+#define AVG_SHIFTING 3
+int want_frame_period = 40;
 
 SDL_Surface *screen;
 int winW;
@@ -580,31 +595,21 @@ SDL_sem *saving_done;
 
 int render_thread(void *arg) {
 
-  int last_ticks = SDL_GetTicks() - frame_period;
-  int printcount = 0;
-#define AVG_SHIFTING 3
-  int avg_frame_period = 0;
+  int last_ticks = SDL_GetTicks() - want_frame_period;
 
   for (;;) {
-
-    if (printcount++ > 50) {
-      printcount = 0;
-      printf("%dms %.1ffps", avg_frame_period>>AVG_SHIFTING, 1000./(avg_frame_period>>AVG_SHIFTING));
-      fflush(stdout);
-      printf("\r");
-    }
 
     SDL_SemWait(please_render);
     if (! running)
       break;
 
-    while (frame_period) {
+    while (want_frame_period) {
       int elapsed = SDL_GetTicks() - last_ticks;
-      if (elapsed >= frame_period) {
-        last_ticks += frame_period * (elapsed / frame_period);
+      if (elapsed >= want_frame_period) {
+        last_ticks += want_frame_period * (elapsed / want_frame_period);
         break;
       }
-      SDL_Delay(frame_period - elapsed);
+      SDL_Delay(want_frame_period - elapsed);
     }
 
     if (out_stream) {
@@ -654,6 +659,7 @@ int save_thread(void *arg) {
 int main(int argc, char *argv[])
 {
   double apex_r = 8.01;
+  double seed_r = 12;
   double burn_factor = 1.005;
   bool usage = false;
   bool error = false;
@@ -697,7 +703,7 @@ int main(int argc, char *argv[])
         break;
 
       case 'p':
-        frame_period = atoi(optarg);
+        want_frame_period = atoi(optarg);
         break;
 
       case 'a':
@@ -762,7 +768,7 @@ int main(int argc, char *argv[])
 "           Reduces normal blur dampening by this factor.\n"
 "  -r seed  Supply a random seed to start off with.\n"
 "  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
-, frame_period, apex_r, burn_factor
+, want_frame_period, apex_r, burn_factor
 );
     if (error)
       return 1;
@@ -786,7 +792,6 @@ int main(int argc, char *argv[])
     }
   }
 
-  float minuscule = 1e-3;
   if ((burn_factor > -minuscule) && (burn_factor < minuscule)) {
     fprintf(stderr, "Underdampening too close to zero (-u). Limit is %f.\n",
         minuscule);
@@ -832,7 +837,32 @@ int main(int argc, char *argv[])
   SDL_WM_SetCaption("burnscope", "burnscope");
   SDL_ShowCursor(SDL_DISABLE);
 
-  printf("%d joysticks were found.\n", (int)SDL_NumJoysticks());
+  const int n_joysticks = SDL_NumJoysticks();
+
+  printf("%d joysticks were found.\n", n_joysticks);
+
+  SDL_Joystick **joysticks = NULL;
+
+  if (n_joysticks) {
+    SDL_JoystickEventState(SDL_ENABLE);
+
+    joysticks = malloc(sizeof(SDL_Joystick*) * n_joysticks);
+    
+    int i;
+    for (i = 0; i < n_joysticks; i++)
+    {
+      printf("%2d: '%s'\n", i, SDL_JoystickName(i));
+
+      SDL_Joystick *j = SDL_JoystickOpen(i);
+      printf("    %d buttons  %d axes  %d balls %d hats\n",
+             SDL_JoystickNumButtons(j),
+             SDL_JoystickNumAxes(j),
+             SDL_JoystickNumBalls(j),
+             SDL_JoystickNumHats(j)
+             );
+      joysticks[i] = j;
+    }
+  }
 
 #if 1
 #define n_palette_points 11
@@ -894,12 +924,17 @@ int main(int argc, char *argv[])
   bool do_go = false;
   bool do_wavy = false;
   bool do_stutter = false;
+  bool do_print = true;
   float colorshift_phase_want = 0;
   float colorshift_phase = 0;
   double slow_burn_factor = 1.005;
   float wavy_speed = 3.;
   symmetry_t was_symm = symm_none;
   int please_drop_img = -1;
+
+  float axis_burn = 0;
+  float axis_apex_r = 0;
+  float axis_seed = -1;
 
   please_render = SDL_CreateSemaphore(0);
   please_save = SDL_CreateSemaphore(0);
@@ -941,6 +976,12 @@ int main(int argc, char *argv[])
 
     }
 
+#if 0
+    if (axis_burn) {
+      burn_factor -= 1e-4 * axis_burn;
+      do_print = true;
+    }
+#endif
 
     if (do_calc) {
       float t = (float)frames_rendered / 100.;
@@ -951,15 +992,10 @@ int main(int argc, char *argv[])
       colorshift = palette.len * (0.5 + 0.5 * cos((t+colorshift_phase)*M_PI/50));
       
       double use_burn = burn_factor;
+
       if (do_wavy) {
         use_burn += (wavy_amp * wavy);
 
-        static char printcount = 0;
-        if (printcount++ >= 10) {
-          printcount = 0;
-          printf("burn=%f\r", use_burn);
-          fflush(stdout);
-        }
       }
 
 #if 0
@@ -983,17 +1019,25 @@ int main(int argc, char *argv[])
         }
       }
 
+      if (axis_seed > -.5) {
+        static int seed_slew = 0;
+        if ((++ seed_slew) >= (5. - 5. * axis_seed)) {
+          seed_slew = 0;
+          do_seed ++;
+        }
+      }
+
       while (do_seed) {
         do_seed --;
         int seedx = random() % W;
         int seedy = random() % H;
-        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
+        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, seed_r);
         if ((symm == symm_x) || (symm == symm_xy))
-          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
+          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, seed_r);
         if ((symm == symm_y) || (symm == symm_xy))
-          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
+          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, seed_r);
         if (symm == symm_point)
-          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
+          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, seed_r);
       }
 
       if (please_drop_img >= 0 && please_drop_img < n_images) {
@@ -1039,10 +1083,20 @@ int main(int argc, char *argv[])
 
     SDL_SemPost(please_render);
 
+#if 0
+    if (axis_apex_r) {
+      apex_r += axis_apex_r / 6.;
+      apex_r = max(.5, min(apex_r, min(W,H) / 2));
+      do_print = true;
+    }
+#endif
+
     {
       static double was_apex_r = 0;
       static double was_burn = 0;
       static char was_apex_opt = 0;
+
+      apex_r = fabs(apex_r);
 
       if ((was_apex_r != apex_r) || (was_burn != slow_burn_factor) || (was_apex_opt != apex_opt)) {
         make_apex(apex_r, slow_burn_factor, apex_opt);
@@ -1052,6 +1106,28 @@ int main(int argc, char *argv[])
       }
 
     }
+
+    static char printcount = 0;
+    if (printcount++ >= 10) {
+      if (printcount >= 50)
+        do_print = true;
+
+      if (do_print) {
+        do_print = false;
+        printcount = 0;
+        printf("%.1ffps burn=%f  wavy=%s_x%f_@%.1f symm=%s  apex_r=%f_opt%d  stutter=%s\n",
+               1000./(avg_frame_period>>AVG_SHIFTING),
+               burn_factor,
+               do_wavy? "on" : "off",
+               wavy_amp,
+               wavy_speed,
+               symmetry_name[symm],
+               apex_r,apex_opt,
+               do_stutter? "on":"off");
+        fflush(stdout);
+      }
+    }
+
 
     while (running) {
 
@@ -1219,9 +1295,7 @@ int main(int argc, char *argv[])
                 break;
             }
             }
-
-            printf("burn=%f  wavy=%s_x%f_@%.1f symm=%s  apex_r=%f_opt%d  stutter=%s\n",
-              slow_burn_factor, do_wavy? "on" : "off", wavy_amp, wavy_speed, symmetry_name[symm], apex_r,apex_opt, do_stutter? "on":"off");
+            do_print = true;
             break;
 
           case SDL_KEYUP:
@@ -1232,6 +1306,118 @@ int main(int argc, char *argv[])
 
           case SDL_QUIT:
             running = false;
+            break;
+
+          case SDL_JOYAXISMOTION:
+            {
+              float axis_val = event.jaxis.value;
+              axis_val /= 32768;
+#if 0
+#define axis_clear .2
+              if (fabs(axis_val) < axis_clear)
+                axis_val = 0;
+              else
+                axis_val = (axis_val - axis_clear) / (1.0 - axis_clear);
+#endif
+
+              //axis_val *= axis_val * axis_val * 1.2;
+
+              switch(event.jaxis.axis) {
+                case 0:
+                  //axis_apex_r = - axis_val;
+                  if (axis_val <= 0.01)
+                    apex_r = 0.9 + 12 * (1 + axis_val);
+                  else
+                    apex_r = 12.9 + (min(W,H)/5) * axis_val;
+                  do_print = true;
+                  break;
+                case 1:
+                  //axis_burn = axis_val;
+                  axis_val = - axis_val;
+                  if (axis_val <= 0)
+                    burn_factor = 0.995 + .007 * (1 + axis_val);
+                  else
+                    burn_factor = (0.995+.007) + .01 * (axis_val * axis_val);
+                  do_print = true;
+                  break;
+                case 3:
+                  if (axis_val <= 0.01)
+                    seed_r = 0.9 + 12 * (1 + axis_val);
+                  else
+                    seed_r = 12.9 + (min(W,H)/5) * axis_val;
+                  do_print = true;
+                  break;
+
+                case 5:
+                  axis_seed = axis_val;
+                  break;
+
+                default:
+                  printf("axis %d = %.3f\n", event.jaxis.axis, axis_val);
+                  break;
+              }
+            }
+            break;
+
+          case SDL_JOYBUTTONDOWN:
+            switch (event.jbutton.button) {
+              case 9:
+                apex_r = 12;
+                burn_factor = 1.005;
+                break;
+
+              case 3:
+                colorshift_phase_want += 12;
+                break;
+
+              case 2:
+                symm = symm_x;
+                was_symm = symm_none;
+                break;
+
+              case 1:
+                symm = symm_point;
+                was_symm = symm_none;
+                break;
+
+              case 0:
+                bzero(pixbuf, W * H * sizeof(pixel_t));
+                break;
+
+              case 5:
+                do_seed ++;
+                break;
+
+              default:
+                printf("%2d: button %d = %s\n",
+                       event.jbutton.which, event.jbutton.button,
+                       event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
+                break;
+            }
+            break;
+
+          case SDL_JOYBUTTONUP:
+            switch (event.jbutton.button) {
+              case 5:
+                seed_key_down = false;
+                break;
+              default:
+                printf("%2d: button %d = %s\n",
+                       event.jbutton.which, event.jbutton.button,
+                       event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
+                break;
+            }
+            break;
+
+          case SDL_JOYHATMOTION:  /* Handle Hat Motion */
+            printf("%2d: hat %d = %d\n",
+                   event.jhat.which, event.jhat.hat, event.jhat.value);
+            break;
+
+          case SDL_JOYBALLMOTION:  /* Handle Joyball Motion */
+            printf("%2d: hat %d += %d, %d\n",
+                   event.jball.which, event.jball.ball,
+                   event.jball.xrel, event.jball.yrel);
             break;
         }
       }
@@ -1259,6 +1445,16 @@ int main(int argc, char *argv[])
   SDL_DestroySemaphore(please_save);
   SDL_DestroySemaphore(rendering_done);
   SDL_DestroySemaphore(saving_done);
+
+  if (joysticks) {
+    int i;
+    for (i = 0; i < n_joysticks; i++)
+    {
+      SDL_JoystickClose(joysticks[i]);
+    }
+    free(joysticks);
+    joysticks = NULL;
+  }
 
   printf("\n");
   printf("%d frames rendered\n", frames_rendered);
