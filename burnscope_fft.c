@@ -21,16 +21,21 @@
 
 #include <stdint.h>
 
-#include "dope.h"
-#include "shit.h"
-#include "human.h"
-#include "kill.h"
-
 #define PALETTE_LEN_BITS 12
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
 #define SEED_VAL (0.5 * PALETTE_LEN)
 
+#define min(A,B) ((A) > (B)? (B) : (A))
+#define max(A,B) ((A) > (B)? (A) : (B))
+
+
 typedef double pixel_t;
+
+#include "images.h"
+
+int n_images = 0;
+image_t *images = NULL;
+
 
 typedef struct {
   Uint32 *colors;
@@ -176,9 +181,6 @@ void make_palette(palette_t *palette, int n_colors,
 }
 
 
-#define min(A,B) ((A) > (B)? (B) : (A))
-#define max(A,B) ((A) > (B)? (A) : (B))
-
 
 int W = 320;
 int H = 200;
@@ -195,6 +197,9 @@ void make_apex(double apex_r, double burn_factor, char apex_opt);
 void fft_init(void) {
   int x;
   int y;
+
+  fftw_init_threads();
+  fftw_plan_with_nthreads(2);
 
   pixbuf = (double *) malloc_check(sizeof(double) * W * H);
   for(x = 0; x < W*H; x++) {
@@ -223,10 +228,12 @@ void fft_init(void) {
   plan_forward = fftw_plan_dft_r2c_2d(H, W, pixbuf, pixbuf_f, FFTW_ESTIMATE);
   plan_backward = fftw_plan_dft_c2r_2d(H, W, pixbuf_f, pixbuf, FFTW_ESTIMATE);
 
+  bzero(apex, W*H*sizeof(pixel_t));
   make_apex(8.01, 1.005, 0);
 }
 
 void fft_destroy(void) {
+  fftw_cleanup_threads();
   fftw_destroy_plan(plan_apex);
   fftw_destroy_plan(plan_forward);
   fftw_destroy_plan(plan_backward);
@@ -240,15 +247,80 @@ void fft_destroy(void) {
 
 void make_apex(double apex_r, double burn_factor, char apex_opt) {
   int x, y;
-  double v;
-
-  bzero(apex, W*H*sizeof(pixel_t));
 
   apex_r = min(apex_r, min(W/2, H/2));
+
   
   double apex_sum = 0;
   double apex_r2 = apex_r * apex_r;
-  v = 1;
+  int apex_r_i = apex_r;
+
+  static int last_apex_r = 0;
+  int overwrite_r = max(apex_r_i, last_apex_r);
+
+  for(x = 0; x < W; x++)
+  {
+
+    for(y = 0; y < H; y++)
+    {
+      double dist = 0;
+      int xx = x;
+      int yy = y;
+      if (xx >= W/2)
+        xx = W - x;
+      if (yy >= H/2)
+        yy = H - y;
+
+      double v;
+      if ((xx > apex_r_i) || (yy > apex_r_i))
+        v = 0;
+      else
+      {
+        dist = xx*xx + yy*yy;
+        v = apex_r2 - dist;
+        if (v < 0)
+          v = 0;
+      }
+
+#if 1
+      if (apex_opt)
+      switch(apex_opt) {
+        default:
+          break;
+
+        case 1:
+          if (x > W/2 || y < H / 2)
+            v = -v * 1.85;
+          break;
+
+        case 2:
+          if (x < W/2 || y < H / 2)
+            v = -v * 1.85;
+          break;
+
+        case 3:
+          if (x < W/2 || y > H / 2)
+            v = -v * 1.85;
+          break;
+
+        case 4:
+          if (x > W/2 || y > H / 2)
+            v = -v * 1.85;
+          break;
+      }
+#endif
+
+
+      apex_sum += v;
+      apex[x+y*W] = v;
+
+      if (y == overwrite_r)
+        y = H - overwrite_r - 1;
+    }
+    if (x == overwrite_r)
+      x = W - overwrite_r - 1;
+  }
+#if 0
   for(x = 0; x < apex_r; x++)
   {
     for(y = 0; y < apex_r; y++)
@@ -269,31 +341,45 @@ void make_apex(double apex_r, double burn_factor, char apex_opt) {
 
     }
   }
+#endif
 
-
-  if (false && apex_opt) {
+#if 0
+  if (apex_opt) {
+    int at = 0;
     switch(apex_opt) {
       default:
         break;
 
       case 1:
-        x = 1;
-        y = 1;
-        v = 10;
+        at = W / 3 + W*(H/3);
         break;
 
       case 2:
-        x = W-1;
-        y = H-1;
-        v = 10;
+        at = W - apex_r;
+        break;
+
+      case 3:
+        at = (H - apex_r)*W;
+        break;
+
+      case 4:
+        at = (H- apex_r)*W + W - apex_r;
         break;
 
     }
 
-    apex_sum -= apex[x + y * W];
-    apex[x + y * W] = v;
-    apex_sum += v;
+    if (at) {
+      for (y = 0; y < apex_r; y ++, at+=(W - apex_r))
+      {
+        for (x = 0; x < apex_r; x ++, at++) {
+          double was = apex[at];
+          apex[at] *= -1.85;
+          apex_sum += apex[at] - was;
+        }
+      }
+    }
   }
+#endif
 
   double apex_mul = (burn_factor / (W*H)) / apex_sum;
 
@@ -302,7 +388,7 @@ void make_apex(double apex_r, double burn_factor, char apex_opt) {
     apex[x] *= apex_mul;
   }
   fftw_execute(plan_apex);
-  printf("%f %f\n",  apex_f[0][0],apex_f[0][1]);
+  last_apex_r = apex_r_i;
 }
 
 
@@ -318,7 +404,11 @@ void mirror_x(pixel_t *pixbuf, const int W, const int H) {
 
   for (y = 0; y < H; y ++) {
     for (x = x_fold; x < W; x ++) {
-      *(pos_to++) = *(pos_from--);
+      pixel_t v = min(*pos_to, *pos_from);
+      *pos_to = v;
+      *pos_from = v;
+      pos_to++;
+      pos_from--;
     }
     pos_from += pitch_from;
     pos_to += pitch_to;
@@ -337,8 +427,13 @@ void mirror_y(pixel_t *pixbuf, const int W, const int H) {
   int pitch_from = -2 * W;
 
   while (pos_to < end) {
-    for (x = 0; x < W; x++)
-      *(pos_to++) = *(pos_from++);
+    for (x = 0; x < W; x++) {
+      pixel_t v = min(*pos_to, *pos_from);
+      *pos_to = v;
+      *pos_from = v;
+      pos_to++;
+      pos_from++;
+    }
     pos_from += pitch_from;
   }
 }
@@ -393,7 +488,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
       for (x = 0; x < W; x++) {
         pixel_t pix = *pixbufpos;
         if (pix >= palette->len) {
-          pix -= palette->len;
+          pix -= palette->len * (int)(pix / palette->len);
           *pixbufpos = pix;
         }
         unsigned int col = (unsigned int)pix + colorshift;
@@ -449,18 +544,16 @@ void seed(pixel_t *pixbuf, const int W, const int H, int x, int y,
   }
 }
 
-void seed_image(int x, int y, char *img, int w, int h) {
+void seed_image(int x, int y, pixel_t *img, int w, int h) {
   pixel_t *pixbuf_pos = pixbuf + y * W + x;
   pixel_t *pixbuf_end = pixbuf + W * H;
-  int pixbuf_pitch = W - w;
+  int pixbuf_pitch = max(0, W - w);
 
-  char *img_pos = img;
+  pixel_t *img_pos = img;
   int xx, yy;
   for (yy = 0; yy < h; yy++) {
     for (xx = 0; (xx < w) && (pixbuf_pos < pixbuf_end); xx++) {
-      if (*img_pos) {
-        *pixbuf_pos = SEED_VAL;
-      }
+      (*pixbuf_pos) += (*img_pos) * (PALETTE_LEN >> 1);
       img_pos ++;
       pixbuf_pos ++;
     }
@@ -481,35 +574,78 @@ int colorshift = 0;
 FILE *out_stream = NULL;
 
 SDL_sem *please_render;
+SDL_sem *please_save;
 SDL_sem *rendering_done;
+SDL_sem *saving_done;
 
 int render_thread(void *arg) {
 
   int last_ticks = SDL_GetTicks() - frame_period;
+  int printcount = 0;
+#define AVG_SHIFTING 3
+  int avg_frame_period = 0;
 
-  while (1) {
+  for (;;) {
+
+    if (printcount++ > 50) {
+      printcount = 0;
+      printf("%dms %.1ffps", avg_frame_period>>AVG_SHIFTING, 1000./(avg_frame_period>>AVG_SHIFTING));
+      fflush(stdout);
+      printf("\r");
+    }
+
     SDL_SemWait(please_render);
     if (! running)
       break;
 
     while (frame_period) {
       int elapsed = SDL_GetTicks() - last_ticks;
-      if (elapsed > frame_period) {
+      if (elapsed >= frame_period) {
         last_ticks += frame_period * (elapsed / frame_period);
         break;
       }
-      SDL_Delay(1);
+      SDL_Delay(frame_period - elapsed);
+    }
+
+    if (out_stream) {
+      SDL_SemWait(saving_done);
     }
 
     render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift);
 
+    int t = SDL_GetTicks();
+
+    if (out_stream) {
+      SDL_SemPost(please_save);
+    }
+
+    frames_rendered ++;
     SDL_SemPost(rendering_done);
+
+    {
+      static int last_ticks2 = 0;
+      int elapsed = t - last_ticks2;
+      last_ticks2 = t;
+      avg_frame_period -= avg_frame_period >>AVG_SHIFTING;
+      avg_frame_period += elapsed;
+    }
+
+  }
+
+  return 0;
+}
+
+int save_thread(void *arg) {
+
+  for (;;) {
+    SDL_SemWait(please_save);
+    if (! running)
+      break;
 
     if (out_stream) {
       fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
     }
-
-    frames_rendered ++;
+    SDL_SemPost(saving_done);
   }
 
   return 0;
@@ -675,22 +811,17 @@ int main(int argc, char *argv[])
 
   if (out_stream_path) {
     out_stream = fopen(out_stream_path, "w");
-#if 0
-    Uint32 ww = winW;
-    Uint32 hh = winH;
-    fwrite(&ww, sizeof(ww), 1, out_stream);
-    fwrite(&hh, sizeof(hh), 1, out_stream);
-#endif
   }
 
+  read_images("./images", &images, &n_images);
 
 
-  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 ) 
+  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK) < 0 ) 
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
-    
+
   screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
   if ( screen == NULL ) 
   {
@@ -700,6 +831,8 @@ int main(int argc, char *argv[])
   
   SDL_WM_SetCaption("burnscope", "burnscope");
   SDL_ShowCursor(SDL_DISABLE);
+
+  printf("%d joysticks were found.\n", (int)SDL_NumJoysticks());
 
 #if 1
 #define n_palette_points 11
@@ -764,12 +897,19 @@ int main(int argc, char *argv[])
   float colorshift_phase_want = 0;
   float colorshift_phase = 0;
   double slow_burn_factor = 1.005;
+  float wavy_speed = 3.;
   symmetry_t was_symm = symm_none;
+  int please_drop_img = -1;
 
   please_render = SDL_CreateSemaphore(0);
+  please_save = SDL_CreateSemaphore(0);
   rendering_done = SDL_CreateSemaphore(0);
+  saving_done = SDL_CreateSemaphore(1);
 
   SDL_Thread *render_thread_token = SDL_CreateThread(render_thread, NULL);
+  SDL_Thread *save_thread_token = NULL;
+  if (out_stream)
+    SDL_CreateThread(save_thread, NULL);
 
   fftw_execute(plan_forward);
   while (running)
@@ -804,16 +944,25 @@ int main(int argc, char *argv[])
 
     if (do_calc) {
       float t = (float)frames_rendered / 100.;
-      wavy = sin(t);
+      wavy = sin(wavy_speed*t);
       if (colorshift_phase_want != colorshift_phase) {
         colorshift_phase += (colorshift_phase_want - colorshift_phase) / 15;
       }
       colorshift = palette.len * (0.5 + 0.5 * cos((t+colorshift_phase)*M_PI/50));
       
       double use_burn = burn_factor;
-      if (do_wavy)
+      if (do_wavy) {
         use_burn += (wavy_amp * wavy);
 
+        static char printcount = 0;
+        if (printcount++ >= 10) {
+          printcount = 0;
+          printf("burn=%f\r", use_burn);
+          fflush(stdout);
+        }
+      }
+
+#if 0
       double diff = use_burn - slow_burn_factor;
       if (diff > .0001)
         diff = .0001;
@@ -821,6 +970,9 @@ int main(int argc, char *argv[])
       if (diff < -.0001)
         diff = -.0001;
       slow_burn_factor += diff;
+#else
+      slow_burn_factor = use_burn;
+#endif
 
 
       if (seed_key_down) {
@@ -830,6 +982,26 @@ int main(int argc, char *argv[])
           do_seed ++;
         }
       }
+
+      while (do_seed) {
+        do_seed --;
+        int seedx = random() % W;
+        int seedy = random() % H;
+        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
+        if ((symm == symm_x) || (symm == symm_xy))
+          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
+        if ((symm == symm_y) || (symm == symm_xy))
+          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
+        if (symm == symm_point)
+          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
+      }
+
+      if (please_drop_img >= 0 && please_drop_img < n_images) {
+        image_t *img = &images[please_drop_img];
+        seed_image(random() % (30 + W - img->width), random() %(30 + H- img->height), img->data, img->width, img->height);
+        please_drop_img = -1;
+      }
+
 
       {
         if (was_symm != symm) {
@@ -863,19 +1035,6 @@ int main(int argc, char *argv[])
 
       fftw_execute(plan_backward);
 
-      while (do_seed) {
-        do_seed --;
-        int seedx = random() % W;
-        int seedy = random() % H;
-        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, apex_r);
-        if ((symm == symm_x) || (symm == symm_xy))
-          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, apex_r);
-        if ((symm == symm_y) || (symm == symm_xy))
-          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, apex_r);
-        if (symm == symm_point)
-          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, apex_r);
-      }
-
     }
 
     SDL_SemPost(please_render);
@@ -894,15 +1053,8 @@ int main(int argc, char *argv[])
 
     }
 
-    bool events_polled = false;
-    bool waiting = true;
-    while (waiting && running) {
-      if (SDL_SemTryWait(rendering_done) == 0) {
-        waiting = false;
-        if (events_polled)
-          break;
-      }
-      
+    while (running) {
+
       SDL_Event event;
       while (SDL_PollEvent(&event)) 
       {
@@ -1003,22 +1155,20 @@ int main(int argc, char *argv[])
                 do_go = true;
                 break;
 
-#define drop_img(name)  seed_image(random() % (30 + W - name##_width), random() %(30 + H- name##_height), name##_data, name##_width, name##_height)
-
               case 'u':
-                drop_img(human);
+                please_drop_img = 0;
                 break;
 
               case 'i':
-                drop_img(kill);
-                break;
-
-              case 'p':
-                drop_img(dope);
+                please_drop_img = 1;
                 break;
 
               case 'o':
-                drop_img(shit);
+                please_drop_img = 2;
+                break;
+
+              case 'p':
+                please_drop_img = 3;
                 break;
 
               case 'a':
@@ -1049,6 +1199,14 @@ int main(int argc, char *argv[])
                 apex_r += (float)min(W,H) / 48;
                 break;
 
+              case 'l':
+                wavy_speed += .5;
+                break;
+
+              case 'k':
+                wavy_speed -= .5;
+                break;
+
               case '1':
                 apex_r = 1;
                 break;
@@ -1062,8 +1220,8 @@ int main(int argc, char *argv[])
             }
             }
 
-            printf("burn=%f  wavy=%s wavy_amp=%f  symm=%s  apex_r=%f  stutter=%s\n",
-              slow_burn_factor, do_wavy? "on" : "off", wavy_amp, symmetry_name[symm], apex_r, do_stutter? "on":"off");
+            printf("burn=%f  wavy=%s_x%f_@%.1f symm=%s  apex_r=%f_opt%d  stutter=%s\n",
+              slow_burn_factor, do_wavy? "on" : "off", wavy_amp, wavy_speed, symmetry_name[symm], apex_r,apex_opt, do_stutter? "on":"off");
             break;
 
           case SDL_KEYUP:
@@ -1077,18 +1235,30 @@ int main(int argc, char *argv[])
             break;
         }
       }
-      events_polled = true;
 
-      if (waiting)
-        SDL_Delay(2);
+      if (! running)
+        break;
+
+      if (SDL_SemTryWait(rendering_done) == 0)
+        break;
+      else
+        SDL_Delay(5);
     }
   }
 
+  running = false;
+
   SDL_SemPost(please_render);
+  if (out_stream)
+    SDL_SemPost(please_save);
   SDL_WaitThread(render_thread_token, NULL);
+  if (out_stream)
+    SDL_WaitThread(save_thread_token, NULL);
 
   SDL_DestroySemaphore(please_render);
+  SDL_DestroySemaphore(please_save);
   SDL_DestroySemaphore(rendering_done);
+  SDL_DestroySemaphore(saving_done);
 
   printf("\n");
   printf("%d frames rendered\n", frames_rendered);

@@ -9,7 +9,7 @@ burnscope: burnscope.c
 fftw3_test: fftw3_test.c
 	gcc -Wall -g fftw3_test.c -o fftw3_test -lm -lSDL -lfftw3
 
-burnscope_fft: burnscope_fft.c
-	gcc -Wall -g burnscope_fft.c -o burnscope_fft -lm -lSDL -lfftw3
+burnscope_fft: burnscope_fft.c images.h
+	gcc -Wall -g burnscope_fft.c -o burnscope_fft -lSDL -lfftw3_threads -lfftw3 -lm -lpng
 
 # vim: noexpandtab
