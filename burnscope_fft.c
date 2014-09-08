@@ -183,8 +183,9 @@ void make_palette(palette_t *palette, int n_colors,
 
 
 
-int W = 320;
-int H = 200;
+int W = 1920 / 3;
+int H = 1080 / 3;
+int min_W_H, max_W_H;
 pixel_t *pixbuf = NULL;
 pixel_t *apex = NULL;
 fftw_complex *pixbuf_f;
@@ -249,7 +250,7 @@ void fft_destroy(void) {
 void make_apex(double apex_r, double burn_factor, char apex_opt) {
   int x, y;
 
-  apex_r = min(apex_r, min(W/2, H/2)-2);
+  apex_r = min(apex_r, min_W_H/2 - 2);
 
   if (fabs(burn_factor) < minuscule) {
     if (burn_factor < 0)
@@ -465,7 +466,6 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
   }
 }
 
-
 void render(SDL_Surface *screen, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf, 
             int multiply_pixels, int colorshift)
@@ -586,7 +586,26 @@ int winH;
 palette_t palette;
 int multiply_pixels = 2;
 int colorshift = 0;
+int normalize_colorshift = 0;
 FILE *out_stream = NULL;
+
+void maximize(void) {
+  pixel_t *pos;
+  pixel_t *end = pixbuf + (W * H);
+  pixel_t max_val = -1;
+  for (pos = pixbuf; pos < end; pos++) {
+    max_val = max(max_val, *pos);
+  }
+  pixel_t diff = (pixel_t)PALETTE_LEN - max_val;
+
+  for (pos = pixbuf; pos < end; pos++) {
+    *pos += diff;
+  }
+
+  normalize_colorshift -= diff;
+  printf("normalized %+.2f\n", diff);
+}
+
 
 SDL_sem *please_render;
 SDL_sem *please_save;
@@ -782,10 +801,12 @@ int main(int argc, char *argv[])
     exit(-1);
   }
 
+  min_W_H = min(W, H);
+  max_W_H = max(W, H);
+
   {
     double was_apex_r = apex_r;
-    int max_dim = max(W, H);
-    apex_r = min(max_dim, apex_r);
+    apex_r = min(max_W_H, apex_r);
     apex_r = max(1, apex_r);
     if (apex_r != was_apex_r) {
       fprintf(stderr, "Invalid apex radius (-a %f). Forcing %f.", was_apex_r, apex_r);
@@ -868,7 +889,7 @@ int main(int argc, char *argv[])
 #define n_palette_points 11
   palette_point_t palette_points[n_palette_points] = {
     { 0./6, 1, 1, 1 },
-    { 0.5/6, 1, 0, 0 },
+    { 0.5/6, 0.1, 1, .10 },
     { 1./6, 0, .1, .5 },
     { 1.5/6, .3, .3,1 },
     { 3./6, 1, 1, 0 },
@@ -924,6 +945,9 @@ int main(int argc, char *argv[])
   bool do_go = false;
   bool do_wavy = false;
   bool do_stutter = false;
+  bool do_minimal_apex_size = false;
+  bool do_blank = false;
+  bool do_maximize = false;
   bool do_print = true;
   float colorshift_phase_want = 0;
   float colorshift_phase = 0;
@@ -932,9 +956,8 @@ int main(int argc, char *argv[])
   symmetry_t was_symm = symm_none;
   int please_drop_img = -1;
 
-  float axis_burn = 0;
-  float axis_apex_r = 0;
-  float axis_seed = -1;
+  float axis_seed = 0;
+  float axis_colorshift = 0;
 
   please_render = SDL_CreateSemaphore(0);
   please_save = SDL_CreateSemaphore(0);
@@ -976,20 +999,35 @@ int main(int argc, char *argv[])
 
     }
 
-#if 0
-    if (axis_burn) {
-      burn_factor -= 1e-4 * axis_burn;
-      do_print = true;
+    if (do_maximize) {
+      do_maximize = false;
+      maximize();
     }
-#endif
+
+    if (do_blank) {
+      do_blank = false;
+      bzero(pixbuf, W * H * sizeof(pixel_t));
+    }
 
     if (do_calc) {
       float t = (float)frames_rendered / 100.;
       wavy = sin(wavy_speed*t);
+      
+      colorshift = normalize_colorshift;
+
       if (colorshift_phase_want != colorshift_phase) {
         colorshift_phase += (colorshift_phase_want - colorshift_phase) / 15;
+        colorshift += (0.5 + 0.5 * cos((t + colorshift_phase)*M_PI/50));
       }
-      colorshift = palette.len * (0.5 + 0.5 * cos((t+colorshift_phase)*M_PI/50));
+
+
+      {
+        static int colorshift_axis_accum = 0;
+        colorshift_axis_accum += 70.*axis_colorshift*axis_colorshift;
+        colorshift += colorshift_axis_accum;
+      }
+      colorshift %= PALETTE_LEN;
+
       
       double use_burn = burn_factor;
 
@@ -1019,9 +1057,9 @@ int main(int argc, char *argv[])
         }
       }
 
-      if (axis_seed > -.5) {
+      if (axis_seed) {
         static int seed_slew = 0;
-        if ((++ seed_slew) >= (5. - 5. * axis_seed)) {
+        if ((++ seed_slew) >= 5.*(1. - axis_seed)) {
           seed_slew = 0;
           do_seed ++;
         }
@@ -1082,14 +1120,6 @@ int main(int argc, char *argv[])
     }
 
     SDL_SemPost(please_render);
-
-#if 0
-    if (axis_apex_r) {
-      apex_r += axis_apex_r / 6.;
-      apex_r = max(.5, min(apex_r, min(W,H) / 2));
-      do_print = true;
-    }
-#endif
 
     {
       static double was_apex_r = 0;
@@ -1195,7 +1225,7 @@ int main(int argc, char *argv[])
                 break;
               case 'e':
                 burn_factor = 1.005;
-                apex_r = 8.01 * min(W, H) / 240.;
+                apex_r = 8.01 * min_W_H / 240.;
                 break;
               case 'r':
                 burn_factor += .0003;
@@ -1272,7 +1302,7 @@ int main(int argc, char *argv[])
                 break;
 
               case '0':
-                apex_r += (float)min(W,H) / 48;
+                apex_r += (float)min_W_H / 48;
                 break;
 
               case 'l':
@@ -1290,7 +1320,7 @@ int main(int argc, char *argv[])
               default:
 
                 if ((c >= '2') && (c <= '9')) {
-                  apex_r = ((float)min(W, H) / 240.) * (1 + c - '1');
+                  apex_r = ((float)min_W_H / 240.) * (1 + c - '1');
                 }
                 break;
             }
@@ -1322,34 +1352,44 @@ int main(int argc, char *argv[])
 
               //axis_val *= axis_val * axis_val * 1.2;
 
+              #define calc_axis_val(start, center, end) \
+                  ((axis_val <= 0)? \
+                    ((start) + ((center) - (start)) * (1 + (axis_val))) \
+                    : \
+                    ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
+                
+
               switch(event.jaxis.axis) {
                 case 0:
-                  //axis_apex_r = - axis_val;
-                  if (axis_val <= 0.01)
-                    apex_r = 0.9 + 12 * (1 + axis_val);
-                  else
-                    apex_r = 12.9 + (min(W,H)/8) * axis_val;
+                  if (do_minimal_apex_size) {
+                    apex_r = calc_axis_val(.99, 1.2, 1.999);
+                  }
+                  else {
+                    apex_r = calc_axis_val(1.2, 10., min_W_H/8);
+                  }
                   do_print = true;
                   break;
                 case 1:
-                  //axis_burn = axis_val;
                   axis_val = - axis_val;
-                  if (axis_val <= 0)
-                    burn_factor = 0.995 + .007 * (1 + axis_val);
-                  else
-                    burn_factor = (0.995+.007) + .01 * (axis_val * axis_val);
+                  if (axis_val > 0)
+                    axis_val *= axis_val;
+                  burn_factor = calc_axis_val(.998, 1.0005, 1.02);
                   do_print = true;
                   break;
                 case 3:
-                  if (axis_val <= 0.01)
-                    seed_r = 0.9 + 12 * (1 + axis_val);
-                  else
-                    seed_r = 12.9 + (min(W,H)/5) * axis_val;
+                  seed_r = calc_axis_val(1, 3, min_W_H/5);
                   do_print = true;
                   break;
 
                 case 5:
-                  axis_seed = axis_val;
+                  axis_seed = (axis_val + .5) / 1.5;
+                  if (axis_seed < 0)
+                    axis_seed = 0;
+                  axis_seed *= axis_seed;
+                  break;
+
+                case 2:
+                  axis_colorshift = (1. + axis_val) / 2;
                   break;
 
                 default:
@@ -1361,13 +1401,8 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONDOWN:
             switch (event.jbutton.button) {
-              case 9:
-                apex_r = 12;
-                burn_factor = 1.005;
-                break;
-
-              case 3:
-                colorshift_phase_want += 12;
+              case 0:
+                do_maximize = true;
                 break;
 
               case 2:
@@ -1380,12 +1415,16 @@ int main(int argc, char *argv[])
                 was_symm = symm_none;
                 break;
 
-              case 0:
-                bzero(pixbuf, W * H * sizeof(pixel_t));
+              case 3:
+                do_blank = true;
                 break;
 
               case 5:
                 do_seed ++;
+                break;
+
+              case 9:
+                do_minimal_apex_size = ! do_minimal_apex_size;
                 break;
 
               default:
@@ -1401,6 +1440,7 @@ int main(int argc, char *argv[])
               case 5:
                 seed_key_down = false;
                 break;
+
               default:
                 printf("%2d: button %d = %s\n",
                        event.jbutton.which, event.jbutton.button,
