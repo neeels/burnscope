@@ -778,6 +778,7 @@ int main(int argc, char *argv[])
 "Options:\n"
 "\n"
 "  -g WxH   Set animation width and height in number of pixels.\n"
+"           Default is '-g %dx%d'.\n"
 "  -p ms    Set frame period to <ms> milliseconds (slow things down).\n"
 "           If zero, run as fast as possible. Default is %d.\n"
 "  -m N     Multiply each pixel N times in width and height, to give a larger\n"
@@ -787,7 +788,7 @@ int main(int argc, char *argv[])
 "           Reduces normal blur dampening by this factor.\n"
 "  -r seed  Supply a random seed to start off with.\n"
 "  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
-, want_frame_period, apex_r, burn_factor
+, W, H, want_frame_period, apex_r, burn_factor
 );
     if (error)
       return 1;
@@ -945,7 +946,6 @@ int main(int argc, char *argv[])
   bool do_go = false;
   bool do_wavy = false;
   bool do_stutter = false;
-  bool do_minimal_apex_size = false;
   bool do_blank = false;
   bool do_maximize = false;
   bool do_print = true;
@@ -1137,22 +1137,24 @@ int main(int argc, char *argv[])
 
     }
 
+    static bool apex_r_clamp = false;
+    static bool burn_clamp = false;
+
     static char printcount = 0;
-    if (printcount++ >= 100) {
-      if (printcount >= 500)
+    if (printcount++ >= 10) {
+      if (printcount >= 50)
         do_print = true;
 
       if (do_print) {
         do_print = false;
         printcount = 0;
-        printf("%.1ffps burn=%f  wavy=%s_x%f_@%.1f symm=%s  apex_r=%f_opt%d  stutter=%s\n",
+        printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f symm=%s stutter=%s\n",
                1000./(avg_frame_period>>AVG_SHIFTING),
-               burn_factor,
-               do_wavy? "on" : "off",
-               wavy_amp,
-               wavy_speed,
-               symmetry_name[symm],
+               apex_r_clamp ? "*" : "",
                apex_r,apex_opt,
+               burn_clamp ? "*" : "",
+               burn_factor,
+               symmetry_name[symm],
                do_stutter? "on":"off");
         fflush(stdout);
       }
@@ -1164,6 +1166,16 @@ int main(int argc, char *argv[])
       SDL_Event event;
       while (SDL_PollEvent(&event)) 
       {
+        bool update_apex_r = false;
+        static double smallaxis_apex_r = 0;
+        static double largeaxis_apex_r = 0;
+        static double apex_r_center = 10;
+
+        bool update_burn = false;
+        static double smallaxis_burn = 0;
+        static double largeaxis_burn = 0;
+        static double burn_center = 1.0002;
+
         switch (event.type) 
         {
           case SDL_KEYDOWN:
@@ -1352,32 +1364,27 @@ int main(int argc, char *argv[])
 
               //axis_val *= axis_val * axis_val * 1.2;
 
-              #define calc_axis_val(start, center, end) \
-                  ((axis_val <= 0)? \
-                    ((start) + ((center) - (start)) * (1 + (axis_val))) \
-                    : \
-                    ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
-                
 
               switch(event.jaxis.axis) {
                 case 0:
-                  if (do_minimal_apex_size) {
-                    apex_r = calc_axis_val(.99, 1.2, 1.999);
-                  }
-                  else {
-                    apex_r = calc_axis_val(1.2, 10., min_W_H/8);
-                  }
+                  smallaxis_apex_r = axis_val;
+                  update_apex_r = true;
                   do_print = true;
                   break;
                 case 1:
-                  axis_val = - axis_val;
-                  if (axis_val > 0)
-                    axis_val *= axis_val;
-                  burn_factor = calc_axis_val(.998, 1.0005, 1.02);
+                  largeaxis_apex_r = -axis_val;
+                  update_apex_r = true;
                   do_print = true;
                   break;
+                
                 case 3:
-                  seed_r = calc_axis_val(1, 3, min_W_H/5);
+                  smallaxis_burn = axis_val;
+                  update_burn = true;
+                  do_print = true;
+                  break;
+                case 4:
+                  largeaxis_burn = -axis_val;
+                  update_burn = true;
                   do_print = true;
                   break;
 
@@ -1401,7 +1408,7 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONDOWN:
             switch (event.jbutton.button) {
-              case 0:
+              case 4:
                 do_maximize = true;
                 break;
 
@@ -1424,7 +1431,14 @@ int main(int argc, char *argv[])
                 break;
 
               case 9:
-                do_minimal_apex_size = ! do_minimal_apex_size;
+                apex_r_center = apex_r;
+                apex_r_clamp = true;
+                printf("apex_r clamp engage\n");
+                break;
+
+              case 10:
+                burn_center = burn_factor;
+                burn_clamp = true;
                 break;
 
               default:
@@ -1460,6 +1474,37 @@ int main(int argc, char *argv[])
                    event.jball.xrel, event.jball.yrel);
             break;
         }
+
+        #define calc_axis_val(start, center, end, axis_val) \
+            ((axis_val <= 0)? \
+              ((start) + ((center) - (start)) * (1 + (axis_val))) \
+              : \
+              ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
+
+        if (update_apex_r) {
+          double val = smallaxis_apex_r * .2 + largeaxis_apex_r * .8;
+          if (apex_r_clamp && (fabs(val) < .1))
+            apex_r_clamp = false;
+          if (! apex_r_clamp) {
+            double apex_r_min = max(.8, apex_r_center * 0.08);
+            double apex_r_max = min(min_W_H/2, apex_r_center * 10);
+            apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, val);
+
+            val = smallaxis_apex_r * .3 + largeaxis_apex_r * .7;
+            seed_r = calc_axis_val(1, 3, min_W_H/5, val);
+          }
+        }
+        if (update_burn) {
+          double val = smallaxis_burn * .3 + largeaxis_burn * .7;
+          if (burn_clamp && (fabs(val) < .1))
+            burn_clamp = false;
+          if (! burn_clamp) {
+            double burn_min = max(.993, burn_center * (.998/1.0005));
+            double burn_max = min(1.025, burn_center * (1.02/1.0005));
+            burn_factor = calc_axis_val(burn_min, burn_center, burn_max, val);
+          }
+        }
+
       }
 
       if (! running)
