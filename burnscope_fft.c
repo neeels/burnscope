@@ -1138,8 +1138,8 @@ int main(int argc, char *argv[])
     }
 
     static char printcount = 0;
-    if (printcount++ >= 10) {
-      if (printcount >= 50)
+    if (printcount++ >= 100) {
+      if (printcount >= 500)
         do_print = true;
 
       if (do_print) {
@@ -1196,7 +1196,7 @@ int main(int argc, char *argv[])
                 break;
 
               case 'b':
-                bzero(pixbuf, W * H * sizeof(pixel_t));
+                do_blank = true;
                 break;
 
               case 'm':
