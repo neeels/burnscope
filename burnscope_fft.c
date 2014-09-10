@@ -584,10 +584,44 @@ SDL_Surface *screen;
 int winW;
 int winH;
 palette_t palette;
-int multiply_pixels = 2;
-int colorshift = 0;
-int normalize_colorshift = 0;
 FILE *out_stream = NULL;
+FILE *out_params = NULL;
+FILE *in_params = NULL;
+int multiply_pixels = 2;
+int colorshift;
+
+typedef struct {
+  int random_seed;
+} init_params_t;
+
+typedef struct {
+  float apex_r;
+  char apex_opt;
+  float burn_factor;
+  float axis_colorshift;
+  float axis_seed;
+  bool do_stop;
+  bool do_go;
+  bool do_wavy;
+  bool do_stutter;
+  bool do_blank;
+  bool do_maximize;
+  bool force_symm;
+  symmetry_t symm;
+  float seed_r;
+  int n_seed;
+  float wavy_amp;
+  int please_drop_img;
+} params_t;
+
+const int params_file_id = 0x23315;
+const int params_version = 1;
+
+init_params_t ip;
+params_t p = { 8.01, 0, 1.002, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1};
+
+
+int normalize_colorshift = 0;
 
 void maximize(void) {
   pixel_t *pos;
@@ -677,22 +711,20 @@ int save_thread(void *arg) {
 
 int main(int argc, char *argv[])
 {
-  double apex_r = 8.01;
-  double seed_r = 12;
-  double burn_factor = 1.005;
   bool usage = false;
   bool error = false;
   bool start_blank = false;
-  symmetry_t symm = symm_none;
-  char apex_opt = 0;
 
   int c;
-  int random_seed = time(NULL);
 
   char *out_stream_path = NULL;
+  char *out_params_path = NULL;
+  char *in_params_path = NULL;
+
+  ip.random_seed = time(NULL);
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:r:u:O:P:ABh");
+    c = getopt(argc, argv, "a:g:m:p:r:u:i:o:O:P:ABh");
     if (c == -1)
       break;
    
@@ -726,19 +758,27 @@ int main(int argc, char *argv[])
         break;
 
       case 'a':
-        apex_r = atof(optarg);
+        p.apex_r = atof(optarg);
         break;
 
       case 'u':
-        burn_factor = atof(optarg);
+        p.burn_factor = atof(optarg);
         break;
 
       case 'r':
-        random_seed = atoi(optarg);
+        ip.random_seed = atoi(optarg);
         break;
 
       case 'O':
         out_stream_path = optarg;
+        break;
+
+      case 'o':
+        out_params_path = optarg;
+        break;
+
+      case 'i':
+        in_params_path = optarg;
         break;
 
       case 'B':
@@ -746,7 +786,7 @@ int main(int argc, char *argv[])
         break;
 
       case 'A':
-        symm = symm_none;
+        p.symm = symm_none;
         break;
 
       case '?':
@@ -788,7 +828,12 @@ int main(int argc, char *argv[])
 "           Reduces normal blur dampening by this factor.\n"
 "  -r seed  Supply a random seed to start off with.\n"
 "  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
-, W, H, want_frame_period, apex_r, burn_factor
+"  -O file  Write raw video data to file (grows large quickly). Can be\n"
+"           converted to a video file using e.g. ffmpeg.\n"
+"  -o file  Write live control parameters to file for later playback, see -i.\n"
+"  -i file  Play back previous control parameters (possibly in a different\n"
+"           resolution and streaming video to file...)\n"
+, W, H, want_frame_period, p.apex_r, p.burn_factor
 );
     if (error)
       return 1;
@@ -806,15 +851,15 @@ int main(int argc, char *argv[])
   max_W_H = max(W, H);
 
   {
-    double was_apex_r = apex_r;
-    apex_r = min(max_W_H, apex_r);
-    apex_r = max(1, apex_r);
-    if (apex_r != was_apex_r) {
-      fprintf(stderr, "Invalid apex radius (-a %f). Forcing %f.", was_apex_r, apex_r);
+    double was_apex_r = p.apex_r;
+    p.apex_r = min(max_W_H, p.apex_r);
+    p.apex_r = max(1, p.apex_r);
+    if (p.apex_r != was_apex_r) {
+      fprintf(stderr, "Invalid apex radius (-a %f). Forcing %f.", was_apex_r, p.apex_r);
     }
   }
 
-  if ((burn_factor > -minuscule) && (burn_factor < minuscule)) {
+  if ((p.burn_factor > -minuscule) && (p.burn_factor < minuscule)) {
     fprintf(stderr, "Underdampening too close to zero (-u). Limit is %f.\n",
         minuscule);
     exit(-1);
@@ -836,9 +881,75 @@ int main(int argc, char *argv[])
     exit(-1);
   }
 
+  printf("%dx%d --> %dx%d\n", W, H, winW, winH);
+
   if (out_stream_path) {
     out_stream = fopen(out_stream_path, "w");
   }
+
+  if (out_params_path) {
+    out_params = fopen(out_params_path, "w");
+  }
+
+  if (in_params_path) {
+    in_params = fopen(in_params_path, "r");
+  }
+
+
+  int in_params_framelen = sizeof(p);
+  int in_params_read_framelen = sizeof(p);
+
+  if (in_params) {
+    int v;
+    fread(&v, sizeof(v), 1, in_params);
+    if (v != params_file_id) {
+      fprintf(stderr,
+              "This does not appear to be a burnscope parameters file: %s\n",
+              in_params_path);
+      exit(1);
+    }
+    fread(&v, sizeof(v), 1, in_params);
+    if (v != params_version) {
+      printf("Parameter file has different version: %d. I am at %d.\n", v, params_version);
+    }
+    int ip_len;
+    fread(&ip_len, sizeof(ip_len), 1, in_params);
+    if (ip_len < sizeof(ip)) {
+      printf("Parameter file header is smaller: %d instead of %d\n", ip_len, (int)sizeof(ip));
+    }
+    if (ip_len > sizeof(ip)) {
+      printf("Parameter file header is larger, reading smaller header: %d instead of %d\n", (int)sizeof(ip), ip_len);
+      ip_len = sizeof(ip);
+    }
+    fread(&ip, ip_len, 1, in_params);
+
+    fread(&in_params_framelen, sizeof(in_params_framelen), 1, in_params);
+    in_params_framelen = in_params_framelen;
+    if (in_params_framelen < sizeof(p)) {
+      printf("Parameter file frame size is smaller: %d instead of %d\n", in_params_framelen, (int)sizeof(p));
+    }
+    if (in_params_framelen > sizeof(p)) {
+      printf("Parameter file frame size is larger, reading smaller frame: %d instead of %d\n", (int)sizeof(p), in_params_framelen);
+      in_params_read_framelen = sizeof(p);
+    }
+  }
+
+  printf("random seed: %d\n", ip.random_seed);
+  srandom(ip.random_seed);
+
+  if (out_params) {
+#define params_write(what) \
+    fwrite(&what, sizeof(what), 1, out_params)
+
+    params_write(params_file_id);
+    params_write(params_version);
+    int l = sizeof(ip);
+    params_write(l);
+    params_write(ip);
+    l = sizeof(p);
+    params_write(l);
+  }
+
 
   read_images("./images", &images, &n_images);
 
@@ -915,18 +1026,15 @@ int main(int argc, char *argv[])
                palette_points, n_palette_points,
                screen->format);
 
-  printf("random seed: %d\n", random_seed);
-  srandom(random_seed);
-
   fft_init();
 
   if (! start_blank) {
     int i, j;
-    j = 2*apex_r + 1;
+    j = 2*p.apex_r + 1;
     j *= j;
     j = W * H / j;
     for (i = 0; i < j; i ++) {
-      seed(pixbuf, W, H, random() % (W), random() % (H), SEED_VAL, apex_r);
+      seed(pixbuf, W, H, random() % (W), random() % (H), SEED_VAL, p.apex_r);
     }
   }
 
@@ -937,27 +1045,11 @@ int main(int argc, char *argv[])
       printf("%f ", pixbuf[x]);
   }
 
-  bool seed_key_down = false;
-  int do_seed = 0;
-
   float wavy = 0;
-  float wavy_amp = .006;
-  bool do_stop = false;
-  bool do_go = false;
-  bool do_wavy = false;
-  bool do_stutter = false;
-  bool do_blank = false;
-  bool do_maximize = false;
   bool do_print = true;
-  float colorshift_phase_want = 0;
-  float colorshift_phase = 0;
-  double slow_burn_factor = 1.005;
   float wavy_speed = 3.;
-  symmetry_t was_symm = symm_none;
-  int please_drop_img = -1;
-
-  float axis_seed = 0;
-  float axis_colorshift = 0;
+  bool seed_key_down = false;
+  double use_burn = 1.002;
 
   please_render = SDL_CreateSemaphore(0);
   please_save = SDL_CreateSemaphore(0);
@@ -972,24 +1064,35 @@ int main(int argc, char *argv[])
   fftw_execute(plan_forward);
   while (running)
   {
+    if (in_params) {
+      if (! fread(&p, in_params_read_framelen, 1, in_params)) {
+        running = false;
+      }
+      else
+      if (in_params_framelen > in_params_read_framelen) {
+        // skip trailing bytes if params file frame is larger than my params_t.
+        fseek(in_params, in_params_framelen - in_params_read_framelen, SEEK_CUR);
+      }
+    }
+
     bool do_calc = true;
     {
       static bool stopped = false;
-      if (do_stop) {
+      if (p.do_stop) {
         stopped = true;
-        do_stop = false;
+        p.do_stop = false;
         // and do just one rendering
       }
       else
-      if (do_go) {
+      if (p.do_go) {
         stopped = false;
-        do_go = false;
+        p.do_go = false;
       }
       else
       if (stopped)
         do_calc = false;
 
-      if (do_stutter) {
+      if (p.do_stutter) {
         static char stutter_count = 0;
         if ((stutter_count++) > 1)
           stutter_count = 0;
@@ -999,13 +1102,13 @@ int main(int argc, char *argv[])
 
     }
 
-    if (do_maximize) {
-      do_maximize = false;
+    if (p.do_maximize) {
+      //p.do_maximize = false; first save below
       maximize();
     }
 
-    if (do_blank) {
-      do_blank = false;
+    if (p.do_blank) {
+      // p.do_blank = false; first save below
       bzero(pixbuf, W * H * sizeof(pixel_t));
     }
 
@@ -1015,87 +1118,82 @@ int main(int argc, char *argv[])
       
       colorshift = normalize_colorshift;
 
-      if (colorshift_phase_want != colorshift_phase) {
-        colorshift_phase += (colorshift_phase_want - colorshift_phase) / 15;
-        colorshift += (0.5 + 0.5 * cos((t + colorshift_phase)*M_PI/50));
-      }
-
-
       {
         static int colorshift_axis_accum = 0;
-        colorshift_axis_accum += 70.*axis_colorshift*axis_colorshift;
+        colorshift_axis_accum += 70.*p.axis_colorshift*p.axis_colorshift;
         colorshift += colorshift_axis_accum;
       }
       colorshift %= PALETTE_LEN;
 
       
-      double use_burn = burn_factor;
+      use_burn = p.burn_factor;
 
-      if (do_wavy) {
-        use_burn += (wavy_amp * wavy);
-
+      if (p.do_wavy) {
+        use_burn += (p.wavy_amp * wavy);
       }
-
-#if 0
-      double diff = use_burn - slow_burn_factor;
-      if (diff > .0001)
-        diff = .0001;
-      else
-      if (diff < -.0001)
-        diff = -.0001;
-      slow_burn_factor += diff;
-#else
-      slow_burn_factor = use_burn;
-#endif
 
 
       if (seed_key_down) {
         static int seed_slew = 0;
         if ((++ seed_slew) > 1) {
           seed_slew = 0;
-          do_seed ++;
+          p.n_seed ++;
         }
       }
 
-      if (axis_seed) {
+      if (p.axis_seed) {
         static int seed_slew = 0;
-        if ((++ seed_slew) >= 5.*(1. - axis_seed)) {
+        if ((++ seed_slew) >= 5.*(1. - p.axis_seed)) {
           seed_slew = 0;
-          do_seed ++;
+          p.n_seed ++;
         }
       }
 
-      while (do_seed) {
-        do_seed --;
+      // short interruption of if(do_calc) to save parameters frame.
+    }
+
+    if (out_params) {
+      fwrite(&p, sizeof(p), 1, out_params);
+    }
+    if (p.do_blank) {
+      p.do_blank = false; // blanked above
+    }
+    if (p.do_maximize) {
+      p.do_maximize = false; // maximized above
+    }
+
+    if (do_calc) {
+      while (p.n_seed) {
+        p.n_seed --;
         int seedx = random() % W;
         int seedy = random() % H;
-        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, seed_r);
-        if ((symm == symm_x) || (symm == symm_xy))
-          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, seed_r);
-        if ((symm == symm_y) || (symm == symm_xy))
-          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, seed_r);
-        if (symm == symm_point)
-          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, seed_r);
+        seed(pixbuf, W, H, seedx, seedy, SEED_VAL, p.seed_r);
+        if ((p.symm == symm_x) || (p.symm == symm_xy))
+          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, p.seed_r);
+        if ((p.symm == symm_y) || (p.symm == symm_xy))
+          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, p.seed_r);
+        if (p.symm == symm_point)
+          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, p.seed_r);
       }
 
-      if (please_drop_img >= 0 && please_drop_img < n_images) {
-        image_t *img = &images[please_drop_img];
+      if (p.please_drop_img >= 0 && p.please_drop_img < n_images) {
+        image_t *img = &images[p.please_drop_img];
         seed_image(random() % (30 + W - img->width), random() %(30 + H- img->height), img->data, img->width, img->height);
-        please_drop_img = -1;
+        p.please_drop_img = -1;
       }
 
 
       {
-        if (was_symm != symm) {
-          was_symm = symm;
-          if (symm == symm_x)
+        if (p.force_symm) {
+          p.force_symm = false;
+          if (p.symm == symm_x)
             mirror_x(pixbuf, W, H);
           else
-          if (symm == symm_xy)
+          if (p.symm == symm_xy)
             mirror_x(pixbuf, W, H);
-          if ((symm == symm_y) || (symm == symm_xy))
+          if ((p.symm == symm_y) || (p.symm == symm_xy))
             mirror_y(pixbuf, W, H);
-          if (symm == symm_point)
+          if (p.symm == symm_point)
             mirror_p(pixbuf, W, H);
         }
       }
@@ -1126,13 +1224,13 @@ int main(int argc, char *argv[])
       static double was_burn = 0;
       static char was_apex_opt = 0;
 
-      apex_r = fabs(apex_r);
+      p.apex_r = fabs(p.apex_r);
 
-      if ((was_apex_r != apex_r) || (was_burn != slow_burn_factor) || (was_apex_opt != apex_opt)) {
-        make_apex(apex_r, slow_burn_factor, apex_opt);
-        was_apex_r = apex_r;
-        was_burn = slow_burn_factor;
-        was_apex_opt = apex_opt;
+      if ((was_apex_r != p.apex_r) || (was_burn != use_burn) || (was_apex_opt != p.apex_opt)) {
+        make_apex(p.apex_r, use_burn, p.apex_opt);
+        was_apex_r = p.apex_r;
+        was_burn = use_burn;
+        was_apex_opt = p.apex_opt;
       }
 
     }
@@ -1151,11 +1249,11 @@ int main(int argc, char *argv[])
         printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f symm=%s stutter=%s\n",
                1000./(avg_frame_period>>AVG_SHIFTING),
                apex_r_clamp ? "*" : "",
-               apex_r,apex_opt,
+               p.apex_r,p.apex_opt,
                burn_clamp ? "*" : "",
-               burn_factor,
-               symmetry_name[symm],
-               do_stutter? "on":"off");
+               p.burn_factor,
+               symmetry_name[p.symm],
+               p.do_stutter? "on":"off");
         fflush(stdout);
       }
     }
@@ -1174,7 +1272,7 @@ int main(int argc, char *argv[])
         bool update_burn = false;
         static double smallaxis_burn = 0;
         static double largeaxis_burn = 0;
-        static double burn_center = 1.0002;
+        static double burn_center = 1.001;
 
         switch (event.type) 
         {
@@ -1190,131 +1288,127 @@ int main(int argc, char *argv[])
                 break;
 
               case SDLK_RIGHT:
-                burn_factor += .0002;
+                p.burn_factor += .0002;
                 break;
               case SDLK_LEFT:
-                burn_factor -= .0002;
+                p.burn_factor -= .0002;
                 break;
               case SDLK_UP:
-                wavy_amp += .0001;
+                p.wavy_amp += .0001;
                 break;
               case SDLK_DOWN:
-                wavy_amp -= .0001;
+                p.wavy_amp -= .0001;
                 break;
 
               case ' ':
-                do_seed ++;
+                p.n_seed ++;
                 seed_key_down = true;
                 break;
 
               case 'b':
-                do_blank = true;
+                p.do_blank = true;
                 break;
 
               case 'm':
-                symm = (symm + 1) % SYMMETRY_KINDS;
+                p.symm = (p.symm + 1) % SYMMETRY_KINDS;
                 break;
 
               case '\\':
-                symm = symm_x;
-                was_symm = symm_none;
+                p.symm = symm_x;
+                p.force_symm = true;
                 break;
 
               case '\'':
-                symm = symm_point;
-                was_symm = symm_none;
+                p.symm = symm_point;
+                p.force_symm = true;
                 break;
 
               case ';':
-                symm = symm_none;
+                p.symm = symm_none;
                 break;
 
               case 'q':
-                burn_factor -= .002;
+                p.burn_factor -= .002;
                 break;
               case 'w':
-                burn_factor -= .0003;
+                p.burn_factor -= .0003;
                 break;
               case 'e':
-                burn_factor = 1.005;
-                apex_r = 8.01 * min_W_H / 240.;
+                p.burn_factor = 1.005;
+                p.apex_r = 8.01 * min_W_H / 240.;
                 break;
               case 'r':
-                burn_factor += .0003;
+                p.burn_factor += .0003;
                 break;
               case 't':
-                burn_factor += .002;
+                p.burn_factor += .002;
                 break;
 
               case '`':
-                do_wavy = ! do_wavy;
+                p.do_wavy = ! p.do_wavy;
                 break;
 
               case '-':
-                apex_r = max(0.5, apex_r / 1.1);
+                p.apex_r = max(0.5, p.apex_r / 1.1);
                 break;
 
               case '+':
               case '=':
-                apex_r = min(W, apex_r * 1.1);
+                p.apex_r = min(W, p.apex_r * 1.1);
                 break;
 
               case '/':
-                do_go = true;
-                do_stutter = false;
+                p.do_go = true;
+                p.do_stutter = false;
                 break;
 
               case '.':
-                do_stop = true;
+                p.do_stop = true;
                 break;
 
               case ',':
-                do_stutter = ! do_stutter;
-                do_go = true;
+                p.do_stutter = ! p.do_stutter;
+                p.do_go = true;
                 break;
 
               case 'u':
-                please_drop_img = 0;
+                p.please_drop_img = 0;
                 break;
 
               case 'i':
-                please_drop_img = 1;
+                p.please_drop_img = 1;
                 break;
 
               case 'o':
-                please_drop_img = 2;
+                p.please_drop_img = 2;
                 break;
 
               case 'p':
-                please_drop_img = 3;
+                p.please_drop_img = 3;
                 break;
 
               case 'a':
-                apex_opt = 0;
+                p.apex_opt = 0;
                 break;
 
               case 's':
-                apex_opt = 1;
+                p.apex_opt = 1;
                 break;
 
               case 'd':
-                apex_opt = 2;
+                p.apex_opt = 2;
                 break;
 
               case 'f':
-                apex_opt = 3;
+                p.apex_opt = 3;
                 break;
 
               case 'g':
-                apex_opt = 4;
-                break;
-
-              case 'c':
-                colorshift_phase_want += 12;
+                p.apex_opt = 4;
                 break;
 
               case '0':
-                apex_r += (float)min_W_H / 48;
+                p.apex_r += (float)min_W_H / 48;
                 break;
 
               case 'l':
@@ -1326,13 +1420,13 @@ int main(int argc, char *argv[])
                 break;
 
               case '1':
-                apex_r = 1;
+                p.apex_r = 1;
                 break;
 
               default:
 
                 if ((c >= '2') && (c <= '9')) {
-                  apex_r = ((float)min_W_H / 240.) * (1 + c - '1');
+                  p.apex_r = ((float)min_W_H / 240.) * (1 + c - '1');
                 }
                 break;
             }
@@ -1389,14 +1483,14 @@ int main(int argc, char *argv[])
                   break;
 
                 case 5:
-                  axis_seed = (axis_val + .5) / 1.5;
-                  if (axis_seed < 0)
-                    axis_seed = 0;
-                  axis_seed *= axis_seed;
+                  p.axis_seed = (axis_val + .5) / 1.5;
+                  if (p.axis_seed < 0)
+                    p.axis_seed = 0;
+                  p.axis_seed *= p.axis_seed;
                   break;
 
                 case 2:
-                  axis_colorshift = (1. + axis_val) / 2;
+                  p.axis_colorshift = (1. + axis_val) / 2;
                   break;
 
                 default:
@@ -1409,35 +1503,35 @@ int main(int argc, char *argv[])
           case SDL_JOYBUTTONDOWN:
             switch (event.jbutton.button) {
               case 4:
-                do_maximize = true;
+                p.do_maximize = true;
                 break;
 
               case 2:
-                symm = symm_x;
-                was_symm = symm_none;
+                p.symm = symm_x;
+                p.force_symm = true;
                 break;
 
               case 1:
-                symm = symm_point;
-                was_symm = symm_none;
+                p.symm = symm_point;
+                p.force_symm = true;
                 break;
 
               case 3:
-                do_blank = true;
+                p.do_blank = true;
                 break;
 
               case 5:
-                do_seed ++;
+                p.n_seed ++;
                 break;
 
               case 10:
-                apex_r_center = apex_r;
+                apex_r_center = p.apex_r;
                 apex_r_clamp = true;
                 printf("apex_r clamp engage\n");
                 break;
 
               case 9:
-                burn_center = burn_factor;
+                burn_center = p.burn_factor;
                 burn_clamp = true;
                 break;
 
@@ -1451,9 +1545,6 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONUP:
             switch (event.jbutton.button) {
-              case 5:
-                seed_key_down = false;
-                break;
 
               default:
                 printf("%2d: button %d = %s\n",
@@ -1491,10 +1582,9 @@ int main(int argc, char *argv[])
           if (! apex_r_clamp) {
             double apex_r_min = max(.99, apex_r_center * 0.08);
             double apex_r_max = min(min_W_H/2, apex_r_center * 10);
-            apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, val);
+            p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, val);
 
-            val = smallaxis_apex_r * .3 + largeaxis_apex_r * .7;
-            seed_r = calc_axis_val(1, 3, min_W_H/5, val);
+            p.seed_r = calc_axis_val(1, 3, min_W_H/5, val);
           }
         }
         if (update_burn) {
@@ -1507,7 +1597,7 @@ int main(int argc, char *argv[])
           if (! burn_clamp) {
             double burn_min = max(.993, burn_center * (.993/1.0005));
             double burn_max = min(1.025, burn_center * (1.025/1.0005));
-            burn_factor = calc_axis_val(burn_min, burn_center, burn_max, val);
+            p.burn_factor = calc_axis_val(burn_min, burn_center, burn_max, val);
           }
         }
 
@@ -1526,11 +1616,17 @@ int main(int argc, char *argv[])
   running = false;
 
   SDL_SemPost(please_render);
-  if (out_stream)
+  SDL_SemPost(please_render);
+  if (out_stream) {
     SDL_SemPost(please_save);
+    SDL_SemPost(please_save);
+  }
+  printf("waiting for render thread...\n");
   SDL_WaitThread(render_thread_token, NULL);
-  if (out_stream)
+  if (out_stream) {
+    printf("waiting for save thread...\n");
     SDL_WaitThread(save_thread_token, NULL);
+  }
 
   SDL_DestroySemaphore(please_render);
   SDL_DestroySemaphore(please_save);
@@ -1554,6 +1650,14 @@ int main(int argc, char *argv[])
     out_stream = NULL;
     printf("suggestion:\n"
         "ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgb32 -s %dx%d -i %s  -vcodec libx264 -b 20000k %s.avi\n", W * multiply_pixels, H * multiply_pixels, out_stream_path, out_stream_path);
+  }
+  if (out_params) {
+    fclose(out_params);
+    out_params = NULL;
+  }
+  if (in_params) {
+    fclose(in_params);
+    in_params = NULL;
   }
   fft_destroy();
   SDL_Quit();
