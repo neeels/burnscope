@@ -1366,23 +1366,23 @@ int main(int argc, char *argv[])
 
 
               switch(event.jaxis.axis) {
-                case 0:
+                case 3:
                   smallaxis_apex_r = axis_val;
                   update_apex_r = true;
                   do_print = true;
                   break;
-                case 1:
+                case 4:
                   largeaxis_apex_r = -axis_val;
                   update_apex_r = true;
                   do_print = true;
                   break;
                 
-                case 3:
+                case 0:
                   smallaxis_burn = axis_val;
                   update_burn = true;
                   do_print = true;
                   break;
-                case 4:
+                case 1:
                   largeaxis_burn = -axis_val;
                   update_burn = true;
                   do_print = true;
@@ -1430,13 +1430,13 @@ int main(int argc, char *argv[])
                 do_seed ++;
                 break;
 
-              case 9:
+              case 10:
                 apex_r_center = apex_r;
                 apex_r_clamp = true;
                 printf("apex_r clamp engage\n");
                 break;
 
-              case 10:
+              case 9:
                 burn_center = burn_factor;
                 burn_clamp = true;
                 break;
@@ -1482,11 +1482,14 @@ int main(int argc, char *argv[])
               ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
 
         if (update_apex_r) {
-          double val = smallaxis_apex_r * .2 + largeaxis_apex_r * .8;
-          if (apex_r_clamp && (fabs(val) < .1))
+          static double largest_val = 0.5;
+          double val = (smallaxis_apex_r * .2 + largeaxis_apex_r * .8);
+          largest_val = max(largest_val, fabs(val));
+          val /= largest_val;
+          if (apex_r_clamp && (fabs(val) < .05))
             apex_r_clamp = false;
           if (! apex_r_clamp) {
-            double apex_r_min = max(.8, apex_r_center * 0.08);
+            double apex_r_min = max(.99, apex_r_center * 0.08);
             double apex_r_max = min(min_W_H/2, apex_r_center * 10);
             apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, val);
 
@@ -1495,12 +1498,15 @@ int main(int argc, char *argv[])
           }
         }
         if (update_burn) {
-          double val = smallaxis_burn * .3 + largeaxis_burn * .7;
-          if (burn_clamp && (fabs(val) < .1))
+          static double largest_val = 0.5;
+          double val = (smallaxis_burn * .3 + largeaxis_burn * .7);
+          largest_val = max(largest_val, fabs(val));
+          val /= largest_val;
+          if (burn_clamp && (fabs(val) < .05))
             burn_clamp = false;
           if (! burn_clamp) {
-            double burn_min = max(.993, burn_center * (.998/1.0005));
-            double burn_max = min(1.025, burn_center * (1.02/1.0005));
+            double burn_min = max(.993, burn_center * (.993/1.0005));
+            double burn_max = min(1.025, burn_center * (1.025/1.0005));
             burn_factor = calc_axis_val(burn_min, burn_center, burn_max, val);
           }
         }
