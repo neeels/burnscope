@@ -18,10 +18,11 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sndfile.h>
 
 #include <stdint.h>
 
-#define PALETTE_LEN_BITS 12
+#define PALETTE_LEN_BITS 14
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
 #define SEED_VAL (0.5 * PALETTE_LEN)
 
@@ -578,7 +579,7 @@ volatile int frames_rendered = 0;
 
 volatile int avg_frame_period = 0;
 #define AVG_SHIFTING 3
-int want_frame_period = 40;
+float want_fps = 25;
 
 SDL_Surface *screen;
 int winW;
@@ -648,7 +649,8 @@ SDL_sem *saving_done;
 
 int render_thread(void *arg) {
 
-  int last_ticks = SDL_GetTicks() - want_frame_period;
+  float want_frame_period = 1000. / want_fps;
+  float last_ticks = (float)SDL_GetTicks() - want_frame_period;
 
   for (;;) {
 
@@ -659,10 +661,10 @@ int render_thread(void *arg) {
     while (want_frame_period) {
       int elapsed = SDL_GetTicks() - last_ticks;
       if (elapsed >= want_frame_period) {
-        last_ticks += want_frame_period * (elapsed / want_frame_period);
+        last_ticks += want_frame_period * (int)(elapsed / want_frame_period);
         break;
       }
-      SDL_Delay(want_frame_period - elapsed);
+      SDL_Delay((int)want_frame_period - elapsed);
     }
 
     if (out_stream) {
@@ -709,6 +711,29 @@ int save_thread(void *arg) {
   return 0;
 }
 
+
+
+SNDFILE *audio_sndfile = NULL;
+SDL_AudioSpec audio_spec;
+int audio_bytes_per_video_frame = 1;
+
+void audio_play_callback(void *channels, Uint8 *stream, int len) {
+  static int audio_bytes_played = 0;
+  int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
+  want_bytes_played -= audio_bytes_played;
+  if (want_bytes_played < -(audio_bytes_per_video_frame >> 1))
+    ;// audio too fast. do nothing for a frame.
+  else {
+    if (want_bytes_played > (audio_bytes_per_video_frame >> 1)) {
+      // audio too slow. read without playing.
+      sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short));
+      audio_bytes_played += len;
+    }
+    sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short));
+    audio_bytes_played += len;
+  }
+}
+
 int main(int argc, char *argv[])
 {
   bool usage = false;
@@ -721,10 +746,12 @@ int main(int argc, char *argv[])
   char *out_params_path = NULL;
   char *in_params_path = NULL;
 
+  char *audio_path = NULL;
+
   ip.random_seed = time(NULL);
 
   while (1) {
-    c = getopt(argc, argv, "a:g:m:p:r:u:i:o:O:P:ABh");
+    c = getopt(argc, argv, "bha:f:g:m:p:r:u:i:o:O:P:");
     if (c == -1)
       break;
    
@@ -753,8 +780,8 @@ int main(int argc, char *argv[])
         multiply_pixels = atoi(optarg);
         break;
 
-      case 'p':
-        want_frame_period = atoi(optarg);
+      case 'f':
+        want_fps = atof(optarg);
         break;
 
       case 'a':
@@ -781,12 +808,12 @@ int main(int argc, char *argv[])
         in_params_path = optarg;
         break;
 
-      case 'B':
+      case 'b':
         start_blank = true;
         break;
 
-      case 'A':
-        p.symm = symm_none;
+      case 'p':
+        audio_path = optarg;
         break;
 
       case '?':
@@ -819,21 +846,25 @@ int main(int argc, char *argv[])
 "\n"
 "  -g WxH   Set animation width and height in number of pixels.\n"
 "           Default is '-g %dx%d'.\n"
-"  -p ms    Set frame period to <ms> milliseconds (slow things down).\n"
-"           If zero, run as fast as possible. Default is %d.\n"
+"  -f fps   Set desired framerate to <fps> frames per second. The framerate\n"
+"           may slew if your system cannot calculate fast enough.\n"
+"           If zero, run as fast as possible. Default is %.1f.\n"
 "  -m N     Multiply each pixel N times in width and height, to give a larger\n"
 "           picture. This will also multiply the window size.\n"
 "  -a W     Set apex radius, i.e. the blur distance. Default is %.3f.\n"
 "  -u N.n   Set underdampening factor (decimal). Default is %.3f.\n"
 "           Reduces normal blur dampening by this factor.\n"
+"  -b       Start out blank.\n"
 "  -r seed  Supply a random seed to start off with.\n"
-"  -B       Start out blank. (Use 's' key to plant seeds while running.)\n"
 "  -O file  Write raw video data to file (grows large quickly). Can be\n"
 "           converted to a video file using e.g. ffmpeg.\n"
 "  -o file  Write live control parameters to file for later playback, see -i.\n"
 "  -i file  Play back previous control parameters (possibly in a different\n"
 "           resolution and streaming video to file...)\n"
-, W, H, want_frame_period, p.apex_r, p.burn_factor
+"  -p file  Play back audio file in sync with actual framerate.\n"
+"           The file format should match your sound card output format\n"
+"           exactly.\n"
+, W, H, want_fps, p.apex_r, p.burn_factor
 );
     if (error)
       return 1;
@@ -954,7 +985,9 @@ int main(int argc, char *argv[])
   read_images("./images", &images, &n_images);
 
 
-  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK) < 0 ) 
+  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK
+                | (audio_path? SDL_INIT_AUDIO : 0))
+       < 0 ) 
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
@@ -1038,13 +1071,6 @@ int main(int argc, char *argv[])
     }
   }
 
-  if (0)
-  {
-    int x;
-    for (x = 0; x < (W*H); x++)
-      printf("%f ", pixbuf[x]);
-  }
-
   float wavy = 0;
   bool do_print = true;
   float wavy_speed = 3.;
@@ -1062,6 +1088,58 @@ int main(int argc, char *argv[])
     SDL_CreateThread(save_thread, NULL);
 
   fftw_execute(plan_forward);
+
+  if (audio_path) {
+    SF_INFO audio_sndfile_info;
+    audio_sndfile = sf_open(audio_path, SFM_READ, &audio_sndfile_info);
+
+    if (audio_sndfile == NULL) {
+      fprintf(stderr, "Cannot open audio file: %s\n", audio_path);
+      exit(1);
+    }
+
+    int frames = audio_sndfile_info.frames;
+    int seconds = frames / audio_sndfile_info.samplerate;
+    int minutes = seconds / 60;
+    seconds %= 60;
+    printf("%s:\n  %d ch %d Hz %dm%ds",
+           audio_path,
+           audio_sndfile_info.channels,
+           audio_sndfile_info.samplerate,
+           minutes, seconds
+        );
+    if (audio_sndfile_info.format == SF_FORMAT_PCM_16) {
+      printf(" 16bit WAV");
+    }
+    printf("\n");
+    
+    SDL_AudioSpec audio_want_spec;
+    audio_want_spec.freq = audio_sndfile_info.samplerate;
+    audio_want_spec.format = AUDIO_S16;
+    audio_want_spec.channels = audio_sndfile_info.channels;
+    audio_want_spec.samples = audio_want_spec.freq / want_fps;
+    audio_want_spec.callback = audio_play_callback;
+    audio_want_spec.userdata = NULL;
+
+    if (SDL_OpenAudio(&audio_want_spec, &audio_spec) < 0) {
+      fprintf(stderr, "Cannot open audio: %s\n", SDL_GetError());
+      exit(1);
+    }
+
+    printf("Opened audio:\n"
+           "  %d ch %d Hz %d buf",
+           audio_spec.channels,
+           audio_spec.freq,
+           audio_spec.samples);
+    if (audio_spec.format == AUDIO_S16) {
+      printf(" 16bit WAV");
+    }
+    printf("\n");
+    audio_bytes_per_video_frame = audio_spec.freq * audio_spec.channels * sizeof(short)
+                                  / want_fps;
+    SDL_PauseAudio(0);
+  }
+
   while (running)
   {
     if (in_params) {
@@ -1120,7 +1198,7 @@ int main(int argc, char *argv[])
 
       {
         static int colorshift_axis_accum = 0;
-        colorshift_axis_accum += 70.*p.axis_colorshift*p.axis_colorshift;
+        colorshift_axis_accum += 70. * p.axis_colorshift * fabs(p.axis_colorshift);
         colorshift += colorshift_axis_accum;
       }
       colorshift %= PALETTE_LEN;
@@ -1134,19 +1212,28 @@ int main(int argc, char *argv[])
 
 
       if (seed_key_down) {
-        static int seed_slew = 0;
-        if ((++ seed_slew) > 1) {
-          seed_slew = 0;
+        static int key_seed_slew = 0;
+        if ((++ key_seed_slew) > 1) {
+          key_seed_slew = 0;
           p.n_seed ++;
         }
       }
 
-      if (p.axis_seed) {
-        static int seed_slew = 0;
-        if ((++ seed_slew) >= 5.*(1. - p.axis_seed)) {
-          seed_slew = 0;
-          p.n_seed ++;
+      {
+        static unsigned int axis_seed_slew = 0;
+        static bool relaunch = false;
+        axis_seed_slew ++;
+        if (p.axis_seed > .001) {
+          // axis_seed ranges from 0 to 1.
+          if (relaunch || (axis_seed_slew >= 25.*(1. - p.axis_seed))) {
+            axis_seed_slew = 0;
+            relaunch = false;
+            p.n_seed ++;
+          }
         }
+        else
+          // want to start immediately after axis was released.
+          relaunch = true;
       }
 
       // short interruption of if(do_calc) to save parameters frame.
@@ -1235,8 +1322,12 @@ int main(int argc, char *argv[])
 
     }
 
+    static float last_axis_apex_r = 0;
     static bool apex_r_clamp = false;
+    static bool apex_r_clamp_clamp = false;
+    static float last_axis_burn = 0;
     static bool burn_clamp = false;
+    static bool burn_clamp_clamp = false;
 
     static char printcount = 0;
     if (printcount++ >= 10) {
@@ -1264,15 +1355,9 @@ int main(int argc, char *argv[])
       SDL_Event event;
       while (SDL_PollEvent(&event)) 
       {
-        bool update_apex_r = false;
-        static double smallaxis_apex_r = 0;
-        static double largeaxis_apex_r = 0;
         static double apex_r_center = 10;
-
-        bool update_burn = false;
-        static double smallaxis_burn = 0;
-        static double largeaxis_burn = 0;
         static double burn_center = 1.001;
+        static bool do_apex_r_tiny = false;
 
         switch (event.type) 
         {
@@ -1458,28 +1543,46 @@ int main(int argc, char *argv[])
 
               //axis_val *= axis_val * axis_val * 1.2;
 
+        #define calc_axis_val(start, center, end, axis_val) \
+            ((axis_val <= 0)? \
+              ((start) + ((center) - (start)) * (1 + (axis_val))) \
+              : \
+              ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
+        #define AXIS_MIN .05
 
               switch(event.jaxis.axis) {
                 case 3:
-                  smallaxis_apex_r = axis_val;
-                  update_apex_r = true;
-                  do_print = true;
+                  if ((! apex_r_clamp_clamp) && apex_r_clamp && (fabs(axis_val) < AXIS_MIN))
+                    apex_r_clamp = false;
+                  if (! (apex_r_clamp || do_apex_r_tiny)) {
+                    double apex_r_min = max(1.03, apex_r_center * 0.1);
+                    double apex_r_max = min(min_W_H/2, apex_r_center * 10);
+                    p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
+                    do_print = true;
+                  }
+                  last_axis_apex_r = axis_val;
                   break;
+
                 case 4:
-                  largeaxis_apex_r = -axis_val;
-                  update_apex_r = true;
+                  p.axis_colorshift = -axis_val;
                   do_print = true;
                   break;
                 
                 case 0:
-                  smallaxis_burn = axis_val;
-                  update_burn = true;
+                  p.seed_r = calc_axis_val(1, max(3, min_W_H/50), min_W_H/5, axis_val);
                   do_print = true;
                   break;
+
                 case 1:
-                  largeaxis_burn = -axis_val;
-                  update_burn = true;
-                  do_print = true;
+                  if ((! burn_clamp_clamp) && burn_clamp && (fabs(axis_val) < AXIS_MIN))
+                    burn_clamp = false;
+                  if (! burn_clamp) {
+                    double burn_min = max(.993, burn_center * (.993/1.0005));
+                    double burn_max = min(1.025, burn_center * (1.01/1.0005));
+                    p.burn_factor = calc_axis_val(burn_min, burn_center, burn_max, (-axis_val));
+                    do_print = true;
+                  }
+                  last_axis_burn = axis_val;
                   break;
 
                 case 5:
@@ -1487,10 +1590,6 @@ int main(int argc, char *argv[])
                   if (p.axis_seed < 0)
                     p.axis_seed = 0;
                   p.axis_seed *= p.axis_seed;
-                  break;
-
-                case 2:
-                  p.axis_colorshift = (1. + axis_val) / 2;
                   break;
 
                 default:
@@ -1521,18 +1620,29 @@ int main(int argc, char *argv[])
                 break;
 
               case 5:
-                p.n_seed ++;
+                if (fabs(last_axis_apex_r) >= AXIS_MIN) {
+                  apex_r_center = p.apex_r;
+                  apex_r_clamp = true;
+                  apex_r_clamp_clamp = true;
+                }
+                else
+                    printf("last_axis_apex_r %f\n", last_axis_apex_r);
+                
+                if (fabs(last_axis_burn) >= AXIS_MIN) {
+                  burn_center = p.burn_factor;
+                  burn_clamp = true;
+                  burn_clamp_clamp = true;
+                }
+                else
+                    printf("last_axis_burn %f\n", last_axis_burn);
                 break;
 
               case 10:
-                apex_r_center = p.apex_r;
-                apex_r_clamp = true;
-                printf("apex_r clamp engage\n");
+                do_apex_r_tiny = true;
+                p.apex_r = 1.000275;
                 break;
 
               case 9:
-                burn_center = p.burn_factor;
-                burn_clamp = true;
                 break;
 
               default:
@@ -1545,6 +1655,17 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONUP:
             switch (event.jbutton.button) {
+              case 10:
+                do_apex_r_tiny = false;
+                break;
+
+              case 5:
+                apex_r_clamp_clamp = false;
+                burn_clamp_clamp = false;
+                break;
+
+              case 9:
+                break;
 
               default:
                 printf("%2d: button %d = %s\n",
@@ -1566,40 +1687,6 @@ int main(int argc, char *argv[])
             break;
         }
 
-        #define calc_axis_val(start, center, end, axis_val) \
-            ((axis_val <= 0)? \
-              ((start) + ((center) - (start)) * (1 + (axis_val))) \
-              : \
-              ((center) + ((end) - (center)) * (axis_val) * (axis_val)))
-
-        if (update_apex_r) {
-          static double largest_val = 0.5;
-          double val = (smallaxis_apex_r * .2 + largeaxis_apex_r * .8);
-          largest_val = max(largest_val, fabs(val));
-          val /= largest_val;
-          if (apex_r_clamp && (fabs(val) < .05))
-            apex_r_clamp = false;
-          if (! apex_r_clamp) {
-            double apex_r_min = max(.99, apex_r_center * 0.08);
-            double apex_r_max = min(min_W_H/2, apex_r_center * 10);
-            p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, val);
-
-            p.seed_r = calc_axis_val(1, 3, min_W_H/5, val);
-          }
-        }
-        if (update_burn) {
-          static double largest_val = 0.5;
-          double val = (smallaxis_burn * .3 + largeaxis_burn * .7);
-          largest_val = max(largest_val, fabs(val));
-          val /= largest_val;
-          if (burn_clamp && (fabs(val) < .05))
-            burn_clamp = false;
-          if (! burn_clamp) {
-            double burn_min = max(.993, burn_center * (.993/1.0005));
-            double burn_max = min(1.025, burn_center * (1.025/1.0005));
-            p.burn_factor = calc_axis_val(burn_min, burn_center, burn_max, val);
-          }
-        }
 
       }
 
