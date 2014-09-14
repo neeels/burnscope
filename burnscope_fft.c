@@ -497,7 +497,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   int pixelize_offset_x = (pixelize_mask - (W & pixelize_mask)) >> 1;
   int pixelize_offset_y = (pixelize_mask - (H & pixelize_mask)) >> 1;
 
-#if 0
+#if 1
   pixel_t pmin, pmax, psum;
   pmin = pmax = *pixbufpos;
   psum = 0;
@@ -516,7 +516,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         //pix += palette->len * (1 + (int)(-pix) / palette->len);
         *pixbufpos = pix;
       }
-#if 0
+#if 1
       if (my == 0) {
         psum += pix;
         pmin = min(pmin, pix);
@@ -548,8 +548,8 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     screenpos += one_multiplied_row_pitch;
   }
 
-#if 0
-  printf("%10.1f %10.1f %.2f\r", pmin/PALETTE_LEN, pmax/PALETTE_LEN, psum/((float)W*H*PALETTE_LEN));
+#if 1
+  printf("%.3f %.3f %.3f\r", pmin/PALETTE_LEN, pmax/PALETTE_LEN, psum/((float)W*H*PALETTE_LEN));
   fflush(stdout);
 #endif
 #if 0
@@ -754,17 +754,22 @@ int audio_bytes_per_video_frame = 1;
 void audio_play_callback(void *channels, Uint8 *stream, int len) {
   static int audio_bytes_played = 0;
   int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
-  want_bytes_played -= audio_bytes_played;
-  if (want_bytes_played < -(audio_bytes_per_video_frame >> 1))
-    ;// audio too fast. do nothing for a frame.
+  int diff = want_bytes_played - audio_bytes_played;
+  if (diff < -audio_bytes_per_video_frame)
+    printf("audio too fast. %d\n", diff);// audio too fast. do nothing for a frame.
   else {
-    if (want_bytes_played > (audio_bytes_per_video_frame >> 1)) {
+    int read_blocks = 1;
+    if (diff > audio_bytes_per_video_frame) {
       // audio too slow. read without playing.
-      sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short));
+      read_blocks ++;
+      printf("audio too slow. %d\n", diff);
+    }
+
+    while ((read_blocks--)){
+      if (! sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short)))
+        running = false;
       audio_bytes_played += len;
     }
-    sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short));
-    audio_bytes_played += len;
   }
 }
 
@@ -1171,6 +1176,7 @@ int main(int argc, char *argv[])
     printf("\n");
     audio_bytes_per_video_frame = audio_spec.freq * audio_spec.channels * sizeof(short)
                                   / want_fps;
+    printf("audio: %d bytes per video frame.\n", audio_bytes_per_video_frame);
     SDL_PauseAudio(0);
   }
 
@@ -1596,10 +1602,15 @@ int main(int argc, char *argv[])
                 case 3:
                   if ((! apex_r_clamp_clamp) && apex_r_clamp && (fabs(axis_val) < AXIS_MIN))
                     apex_r_clamp = false;
-                  if (! (apex_r_clamp || do_apex_r_tiny)) {
-                    double apex_r_min = max(1.03, apex_r_center * 0.1);
-                    double apex_r_max = min(min_W_H/6, apex_r_center * 2);
-                    p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
+                  if (! (apex_r_clamp)) {
+                    if (do_apex_r_tiny) {
+                      p.apex_r = calc_axis_val(1.00001, 1.000275, 1.004, axis_val);
+                    }
+                    else {
+                      double apex_r_min = max(1.03, apex_r_center * 0.1);
+                      double apex_r_max = min(min_W_H/6, apex_r_center * 2);
+                      p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
+                    }
                     do_print = true;
                   }
                   last_axis_apex_r = axis_val;
@@ -1658,7 +1669,7 @@ int main(int argc, char *argv[])
                   break;
 
                 case 2:
-                  p.pixelize = ((axis_val + 1) / 2) * 10;
+                  p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
                   break;
 
 
@@ -1713,8 +1724,10 @@ int main(int argc, char *argv[])
                 break;
 
               case 10:
-                do_apex_r_tiny = true;
-                p.apex_r = 1.000275;
+                do_apex_r_tiny = ! do_apex_r_tiny;
+                if (do_apex_r_tiny) {
+                  p.apex_r = 1.000275;
+                }
                 break;
 
               case 9:
@@ -1730,9 +1743,6 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONUP:
             switch (event.jbutton.button) {
-              case 10:
-                do_apex_r_tiny = false;
-                break;
 
               case 5:
                 apex_r_clamp_clamp = false;
