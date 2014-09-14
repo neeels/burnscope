@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define PALETTE_LEN_BITS 14
+#define PALETTE_LEN_BITS 12
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
 #define SEED_VAL (0.5 * PALETTE_LEN)
 
@@ -195,7 +195,14 @@ fftw_plan plan_forward;
 fftw_complex *apex_f;
 fftw_plan plan_apex;
 
-void make_apex(double apex_r, double burn_factor, char apex_opt);
+typedef enum {
+  ao_left = 1,
+  ao_right = 2,
+  ao_up = 4,
+  ao_down = 8,
+} apex_opt_t;
+
+void make_apex(double apex_r, double burn_amount, char apex_opt);
 
 void fft_init(void) {
   int x;
@@ -248,10 +255,12 @@ void fft_destroy(void) {
   apex = NULL;
 }
 
-void make_apex(double apex_r, double burn_factor, char apex_opt) {
+void make_apex(double apex_r, double burn_amount, char apex_opt) {
   int x, y;
 
   apex_r = min(apex_r, min_W_H/2 - 2);
+
+  double burn_factor = burn_amount + 1.0;
 
   if (fabs(burn_factor) < minuscule) {
     if (burn_factor < 0)
@@ -266,6 +275,8 @@ void make_apex(double apex_r, double burn_factor, char apex_opt) {
 
   static int last_apex_r = 0;
   int overwrite_r = max(apex_r_i, last_apex_r);
+  int W2 = W >> 1;
+  int H2 = H >> 1;
 
   for(x = 0; x < W; x++)
   {
@@ -292,30 +303,23 @@ void make_apex(double apex_r, double burn_factor, char apex_opt) {
       }
 
 #if 1
-      if (apex_opt)
-      switch(apex_opt) {
-        default:
-          break;
-
-        case 1:
-          if (x > W/2 || y < H / 2)
-            v = -v * 1.85;
-          break;
-
-        case 2:
-          if (x < W/2 || y < H / 2)
-            v = -v * 1.85;
-          break;
-
-        case 3:
-          if (x < W/2 || y > H / 2)
-            v = -v * 1.85;
-          break;
-
-        case 4:
-          if (x > W/2 || y > H / 2)
-            v = -v * 1.85;
-          break;
+      if (apex_opt) {
+        bool neg = (
+          ((apex_opt & ao_left) && (x < W2))
+          ||
+          ((apex_opt & ao_right) && (x > W2))
+          ||
+          ((apex_opt & ao_up) && (y < H2))
+          ||
+          ((apex_opt & ao_down) && (y > H2)));
+        if (neg) {
+          const double vv = -1.8;
+          if ((apex_opt & (ao_left | ao_right)) && (apex_opt & (ao_up | ao_down)))
+            // two directions pressed simultaneously
+            v *= vv;
+          else
+            v *= vv * 30;
+        }
       }
 #endif
 
@@ -469,7 +473,7 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 
 void render(SDL_Surface *screen, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf, 
-            int multiply_pixels, int colorshift)
+            int multiply_pixels, int colorshift, char pixelize)
 {   
   // Lock surface if needed
   if (SDL_MUSTLOCK(screen)) 
@@ -481,44 +485,73 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
   int x, y;
   int mx, my;
-  int pitch = screen->pitch / sizeof(Uint32) - winW;
-
+  int pitch = screen->pitch / sizeof(Uint32);
+  int one_screen_row_pitch = pitch - multiply_pixels;
+  int one_multiplied_row_pitch = (pitch - winW)
+                                 + (multiply_pixels - 1)*pitch;
 
   Uint32 *screenpos = (Uint32*)(screen->pixels);
   pixel_t *pixbufpos = pixbuf;
-  int winy = 0;
-  for (y = 0; y < H; y++) {
-    pixel_t *pixbuf_y_pos = pixbufpos;
 
-    for (my = 0; my < multiply_pixels; my ++, winy++) {
-      pixbufpos = pixbuf_y_pos;
-      int winx = 0;
-      for (x = 0; x < W; x++) {
-        pixel_t pix = *pixbufpos;
-        if (pix >= palette->len) {
-          pix -= palette->len * (int)(pix) / palette->len;
-          *pixbufpos = pix;
-        }
-        else
-        if (pix < 0.001) {
-          pix += palette->len * (1 + (int)(-pix) / palette->len);
-          *pixbufpos = pix;
-        }
-        unsigned int col = (unsigned int)pix + colorshift;
-        col %= palette->len;
-        
-        Uint32 raw = palette->colors[col];
-        
-        for (mx = 0; mx < multiply_pixels; mx++, winx++) {
-          *screenpos = raw;
-          screenpos ++;
-        }
-        pixbufpos ++;
+  int pixelize_mask = ~(INT_MAX << pixelize);
+  int pixelize_offset_x = (pixelize_mask - (W & pixelize_mask)) >> 1;
+  int pixelize_offset_y = (pixelize_mask - (H & pixelize_mask)) >> 1;
+
+#if 0
+  pixel_t pmin, pmax, psum;
+  pmin = pmax = *pixbufpos;
+  psum = 0;
+#endif
+
+  for (y = 0; y < H; y++) {
+    for (x = 0; x < W; x++, pixbufpos++) {
+      pixel_t pix = *pixbufpos;
+      if (pix >= palette->len) {
+        pix -= palette->len * (int)(pix) / palette->len;
+        *pixbufpos = pix;
       }
-      screenpos += pitch;
+      else
+      if (pix < 0.001) {
+        pix = 0;
+        //pix += palette->len * (1 + (int)(-pix) / palette->len);
+        *pixbufpos = pix;
+      }
+#if 0
+      if (my == 0) {
+        psum += pix;
+        pmin = min(pmin, pix);
+        pmax = max(pmax, pix);
+      }
+#endif
+      if (pixelize) {
+        int xx = (((x + pixelize_offset_x) & ~pixelize_mask) - pixelize_offset_x) + (pixelize_mask >> 1);
+        int yy = (((y + pixelize_offset_y) & ~pixelize_mask) - pixelize_offset_y) + (pixelize_mask >> 1);
+        pix = *(pixbuf + max(0,min(W-1,xx)) + max(0,min(H-1,yy))*W);
+      }
+
+      unsigned int col = (unsigned int)pix + colorshift;
+      col %= palette->len;
+      
+      Uint32 raw = palette->colors[col];
+      Uint32 *p = screenpos;
+
+      for (my = 0; my < multiply_pixels; my++) {
+        for (mx = 0; mx < multiply_pixels; mx++) {
+          *p = raw;
+          p ++;
+        }
+        p += one_screen_row_pitch;
+      }
+
+      screenpos += multiply_pixels;
     }
+    screenpos += one_multiplied_row_pitch;
   }
 
+#if 0
+  printf("%10.1f %10.1f %.2f\r", pmin/PALETTE_LEN, pmax/PALETTE_LEN, psum/((float)W*H*PALETTE_LEN));
+  fflush(stdout);
+#endif
 #if 0
   {
     int i, l;
@@ -598,7 +631,7 @@ typedef struct {
 typedef struct {
   float apex_r;
   char apex_opt;
-  float burn_factor;
+  float burn_amount;
   float axis_colorshift;
   float axis_seed;
   bool do_stop;
@@ -613,13 +646,14 @@ typedef struct {
   int n_seed;
   float wavy_amp;
   int please_drop_img;
+  char pixelize;
 } params_t;
 
 const int params_file_id = 0x23315;
 const int params_version = 1;
 
 init_params_t ip;
-params_t p = { 8.01, 0, 1.002, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1};
+params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1};
 
 
 int normalize_colorshift = 0;
@@ -671,7 +705,7 @@ int render_thread(void *arg) {
       SDL_SemWait(saving_done);
     }
 
-    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift);
+    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize);
 
     int t = SDL_GetTicks();
 
@@ -789,7 +823,7 @@ int main(int argc, char *argv[])
         break;
 
       case 'u':
-        p.burn_factor = atof(optarg);
+        p.burn_amount = atof(optarg);
         break;
 
       case 'r':
@@ -864,7 +898,7 @@ int main(int argc, char *argv[])
 "  -p file  Play back audio file in sync with actual framerate.\n"
 "           The file format should match your sound card output format\n"
 "           exactly.\n"
-, W, H, want_fps, p.apex_r, p.burn_factor
+, W, H, want_fps, p.apex_r, p.burn_amount
 );
     if (error)
       return 1;
@@ -890,8 +924,8 @@ int main(int argc, char *argv[])
     }
   }
 
-  if ((p.burn_factor > -minuscule) && (p.burn_factor < minuscule)) {
-    fprintf(stderr, "Underdampening too close to zero (-u). Limit is %f.\n",
+  if (((1. + p.burn_amount) > -minuscule) && ((1. + p.burn_amount) < minuscule)) {
+    fprintf(stderr, "Underdampening too close to 1.0 (-u). Limit is %f.\n",
         minuscule);
     exit(-1);
   }
@@ -1140,6 +1174,10 @@ int main(int argc, char *argv[])
     SDL_PauseAudio(0);
   }
 
+  double apex_r_center = p.apex_r;
+  double burn_center = p.burn_amount;
+  bool do_apex_r_tiny = false;
+
   while (running)
   {
     if (in_params) {
@@ -1190,25 +1228,29 @@ int main(int argc, char *argv[])
       bzero(pixbuf, W * H * sizeof(pixel_t));
     }
 
+    colorshift = normalize_colorshift;
+
+    {
+      static int colorshift_axis_accum = 0;
+      colorshift_axis_accum += ((float)PALETTE_LEN / 120) * p.axis_colorshift * fabs(p.axis_colorshift);
+      colorshift += colorshift_axis_accum;
+    }
+    colorshift %= PALETTE_LEN;
+
+    
     if (do_calc) {
       float t = (float)frames_rendered / 100.;
       wavy = sin(wavy_speed*t);
       
-      colorshift = normalize_colorshift;
-
-      {
-        static int colorshift_axis_accum = 0;
-        colorshift_axis_accum += 70. * p.axis_colorshift * fabs(p.axis_colorshift);
-        colorshift += colorshift_axis_accum;
-      }
-      colorshift %= PALETTE_LEN;
-
-      
-      use_burn = p.burn_factor;
+      use_burn = p.burn_amount;
 
       if (p.do_wavy) {
         use_burn += (p.wavy_amp * wavy);
       }
+
+      if ((p.burn_amount > 0) && (p.apex_r > 10))
+        use_burn += (p.apex_r - 10) * .0000625;
+
 
 
       if (seed_key_down) {
@@ -1255,12 +1297,15 @@ int main(int argc, char *argv[])
         int seedx = random() % W;
         int seedy = random() % H;
         seed(pixbuf, W, H, seedx, seedy, SEED_VAL, p.seed_r);
+
         if ((p.symm == symm_x) || (p.symm == symm_xy))
-          seed(pixbuf, W, H, W - seedx, seedy, SEED_VAL, p.seed_r);
+          // seedx = 0 ==> seedx = W -1
+          seed(pixbuf, W, H, W-1 - seedx, seedy, SEED_VAL, p.seed_r);
+
         if ((p.symm == symm_y) || (p.symm == symm_xy))
-          seed(pixbuf, W, H, seedx, H - seedy, SEED_VAL, p.seed_r);
+          seed(pixbuf, W, H, seedx, H-1 - seedy, SEED_VAL, p.seed_r);
         if (p.symm == symm_point)
-          seed(pixbuf, W, H, W - seedx, H - seedy, SEED_VAL, p.seed_r);
+          seed(pixbuf, W, H, W-1 - seedx, H-1 - seedy, SEED_VAL, p.seed_r);
       }
 
       if (p.please_drop_img >= 0 && p.please_drop_img < n_images) {
@@ -1337,27 +1382,24 @@ int main(int argc, char *argv[])
       if (do_print) {
         do_print = false;
         printcount = 0;
-        printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f symm=%s stutter=%s\n",
+        printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f(%f) symm=%s stutter=%s\n",
                1000./(avg_frame_period>>AVG_SHIFTING),
                apex_r_clamp ? "*" : "",
                p.apex_r,p.apex_opt,
                burn_clamp ? "*" : "",
-               p.burn_factor,
+               use_burn,
+               p.burn_amount,
                symmetry_name[p.symm],
                p.do_stutter? "on":"off");
         fflush(stdout);
       }
     }
 
-
     while (running) {
 
       SDL_Event event;
       while (SDL_PollEvent(&event)) 
       {
-        static double apex_r_center = 10;
-        static double burn_center = 1.001;
-        static bool do_apex_r_tiny = false;
 
         switch (event.type) 
         {
@@ -1373,10 +1415,10 @@ int main(int argc, char *argv[])
                 break;
 
               case SDLK_RIGHT:
-                p.burn_factor += .0002;
+                p.burn_amount += .0002;
                 break;
               case SDLK_LEFT:
-                p.burn_factor -= .0002;
+                p.burn_amount -= .0002;
                 break;
               case SDLK_UP:
                 p.wavy_amp += .0001;
@@ -1413,20 +1455,20 @@ int main(int argc, char *argv[])
                 break;
 
               case 'q':
-                p.burn_factor -= .002;
+                p.burn_amount -= .002;
                 break;
               case 'w':
-                p.burn_factor -= .0003;
+                p.burn_amount -= .0003;
                 break;
               case 'e':
-                p.burn_factor = 1.005;
+                p.burn_amount = .005;
                 p.apex_r = 8.01 * min_W_H / 240.;
                 break;
               case 'r':
-                p.burn_factor += .0003;
+                p.burn_amount += .0003;
                 break;
               case 't':
-                p.burn_factor += .002;
+                p.burn_amount += .002;
                 break;
 
               case '`':
@@ -1556,7 +1598,7 @@ int main(int argc, char *argv[])
                     apex_r_clamp = false;
                   if (! (apex_r_clamp || do_apex_r_tiny)) {
                     double apex_r_min = max(1.03, apex_r_center * 0.1);
-                    double apex_r_max = min(min_W_H/2, apex_r_center * 10);
+                    double apex_r_max = min(min_W_H/6, apex_r_center * 2);
                     p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
                     do_print = true;
                   }
@@ -1577,9 +1619,12 @@ int main(int argc, char *argv[])
                   if ((! burn_clamp_clamp) && burn_clamp && (fabs(axis_val) < AXIS_MIN))
                     burn_clamp = false;
                   if (! burn_clamp) {
-                    double burn_min = max(.993, burn_center * (.993/1.0005));
-                    double burn_max = min(1.025, burn_center * (1.01/1.0005));
-                    p.burn_factor = calc_axis_val(burn_min, burn_center, burn_max, (-axis_val));
+                    const double bmin = -.007;
+                    const double bmax = .025;
+                    double burn_min = bmin + ((burn_center - bmin) * .2);
+                    double burn_max = min(bmax, bmin + ((burn_center - bmin) * 2));
+                    axis_val *= axis_val * axis_val;
+                    p.burn_amount = calc_axis_val(burn_min, burn_center, burn_max, (-axis_val));
                     do_print = true;
                   }
                   last_axis_burn = axis_val;
@@ -1592,10 +1637,36 @@ int main(int argc, char *argv[])
                   p.axis_seed *= p.axis_seed;
                   break;
 
+                case 6:
+                  if (axis_val < -.1)
+                    p.apex_opt = (p.apex_opt & ~(ao_right)) | ao_left;
+                  else
+                  if (axis_val > .1)
+                    p.apex_opt = (p.apex_opt & ~(ao_left)) | ao_right;
+                  else
+                    p.apex_opt = (p.apex_opt & ~(ao_left | ao_right));
+                  break;
+
+                case 7:
+                  if (axis_val < -.1)
+                    p.apex_opt = (p.apex_opt & ~(ao_down)) | ao_up;
+                  else
+                  if (axis_val > .1)
+                    p.apex_opt = (p.apex_opt & ~(ao_up)) | ao_down;
+                  else
+                    p.apex_opt = (p.apex_opt & ~(ao_up | ao_down));
+                  break;
+
+                case 2:
+                  p.pixelize = ((axis_val + 1) / 2) * 10;
+                  break;
+
+
                 default:
                   printf("axis %d = %.3f\n", event.jaxis.axis, axis_val);
                   break;
               }
+
             }
             break;
 
@@ -1615,6 +1686,10 @@ int main(int argc, char *argv[])
                 p.force_symm = true;
                 break;
 
+              case 0:
+                p.do_stop = true;
+                break;
+
               case 3:
                 p.do_blank = true;
                 break;
@@ -1629,7 +1704,7 @@ int main(int argc, char *argv[])
                     printf("last_axis_apex_r %f\n", last_axis_apex_r);
                 
                 if (fabs(last_axis_burn) >= AXIS_MIN) {
-                  burn_center = p.burn_factor;
+                  burn_center = p.burn_amount;
                   burn_clamp = true;
                   burn_clamp_clamp = true;
                 }
@@ -1666,6 +1741,11 @@ int main(int argc, char *argv[])
 
               case 9:
                 break;
+
+              case 0:
+                p.do_go = true;
+                break;
+
 
               default:
                 printf("%2d: button %d = %s\n",
