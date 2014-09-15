@@ -1374,6 +1374,9 @@ int main(int argc, char *argv[])
         was_apex_r = p.apex_r;
         was_burn = use_burn;
         was_apex_opt = p.apex_opt;
+
+        if ((p.apex_opt & (ao_left | ao_right)) && (p.apex_opt & (ao_up | ao_down)))
+          p.symm = symm_none;
       }
 
     }
