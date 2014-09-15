@@ -683,7 +683,7 @@ SDL_sem *saving_done;
 
 int render_thread(void *arg) {
 
-  float want_frame_period = 1000. / want_fps;
+  float want_frame_period = (want_fps > .1? 1000. / want_fps : 0);
   float last_ticks = (float)SDL_GetTicks() - want_frame_period;
 
   for (;;) {
@@ -750,19 +750,24 @@ int save_thread(void *arg) {
 SNDFILE *audio_sndfile = NULL;
 SDL_AudioSpec audio_spec;
 int audio_bytes_per_video_frame = 1;
+volatile int audio_too = 0;
 
 void audio_play_callback(void *channels, Uint8 *stream, int len) {
   static int audio_bytes_played = 0;
   int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
   int diff = want_bytes_played - audio_bytes_played;
-  if (diff < -audio_bytes_per_video_frame)
-    printf("audio too fast. %d\n", diff);// audio too fast. do nothing for a frame.
+  if (diff < -audio_bytes_per_video_frame) {
+    // audio too fast. do nothing for a frame.
+    //printf("audio too fast. %d\n", diff);
+    audio_too = -diff;
+  }
   else {
     int read_blocks = 1;
     if (diff > audio_bytes_per_video_frame) {
       // audio too slow. read without playing.
       read_blocks ++;
-      printf("audio too slow. %d\n", diff);
+      //printf("audio too slow. %d\n", diff);
+      audio_too = -diff;
     }
 
     while ((read_blocks--)){
@@ -1156,7 +1161,7 @@ int main(int argc, char *argv[])
     audio_want_spec.freq = audio_sndfile_info.samplerate;
     audio_want_spec.format = AUDIO_S16;
     audio_want_spec.channels = audio_sndfile_info.channels;
-    audio_want_spec.samples = audio_want_spec.freq / want_fps;
+    audio_want_spec.samples = audio_want_spec.freq / (want_fps > .1? want_fps : 25);
     audio_want_spec.callback = audio_play_callback;
     audio_want_spec.userdata = NULL;
 
@@ -1175,7 +1180,7 @@ int main(int argc, char *argv[])
     }
     printf("\n");
     audio_bytes_per_video_frame = audio_spec.freq * audio_spec.channels * sizeof(short)
-                                  / want_fps;
+                                  / (want_fps > .1? want_fps : 25);
     printf("audio: %d bytes per video frame.\n", audio_bytes_per_video_frame);
     SDL_PauseAudio(0);
   }
@@ -1375,10 +1380,9 @@ int main(int argc, char *argv[])
 
     static float last_axis_apex_r = 0;
     static bool apex_r_clamp = false;
-    static bool apex_r_clamp_clamp = false;
+    static bool clamp_button_held = false;
     static float last_axis_burn = 0;
     static bool burn_clamp = false;
-    static bool burn_clamp_clamp = false;
 
     static char printcount = 0;
     if (printcount++ >= 10) {
@@ -1388,15 +1392,15 @@ int main(int argc, char *argv[])
       if (do_print) {
         do_print = false;
         printcount = 0;
-        printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f(%f) symm=%s stutter=%s\n",
+        printf("%.1ffps apex_r=%s%f_opt%d burn=%s%f(%f) audio_sync=%d\n",
                1000./(avg_frame_period>>AVG_SHIFTING),
                apex_r_clamp ? "*" : "",
                p.apex_r,p.apex_opt,
                burn_clamp ? "*" : "",
                use_burn,
                p.burn_amount,
-               symmetry_name[p.symm],
-               p.do_stutter? "on":"off");
+               audio_too);
+        audio_too = 0;
         fflush(stdout);
       }
     }
@@ -1600,7 +1604,7 @@ int main(int argc, char *argv[])
 
               switch(event.jaxis.axis) {
                 case 3:
-                  if ((! apex_r_clamp_clamp) && apex_r_clamp && (fabs(axis_val) < AXIS_MIN))
+                  if ((! clamp_button_held) && apex_r_clamp && (fabs(axis_val) < AXIS_MIN))
                     apex_r_clamp = false;
                   if (! (apex_r_clamp)) {
                     if (do_apex_r_tiny) {
@@ -1622,12 +1626,12 @@ int main(int argc, char *argv[])
                   break;
                 
                 case 0:
-                  p.seed_r = calc_axis_val(1, max(3, min_W_H/50), min_W_H/5, axis_val);
+                  p.seed_r = calc_axis_val(1, max(3, min_W_H/20), min_W_H/5, axis_val);
                   do_print = true;
                   break;
 
                 case 1:
-                  if ((! burn_clamp_clamp) && burn_clamp && (fabs(axis_val) < AXIS_MIN))
+                  if ((! clamp_button_held) && burn_clamp && (fabs(axis_val) < AXIS_MIN))
                     burn_clamp = false;
                   if (! burn_clamp) {
                     const double bmin = -.007;
@@ -1649,21 +1653,29 @@ int main(int argc, char *argv[])
                   break;
 
                 case 6:
-                  if (axis_val < -.1)
+                  if (axis_val < -.1) {
                     p.apex_opt = (p.apex_opt & ~(ao_right)) | ao_left;
+                    p.do_maximize = true;
+                  }
                   else
-                  if (axis_val > .1)
+                  if (axis_val > .1) {
                     p.apex_opt = (p.apex_opt & ~(ao_left)) | ao_right;
+                    p.do_maximize = true;
+                  }
                   else
                     p.apex_opt = (p.apex_opt & ~(ao_left | ao_right));
                   break;
 
                 case 7:
-                  if (axis_val < -.1)
+                  if (axis_val < -.1) {
                     p.apex_opt = (p.apex_opt & ~(ao_down)) | ao_up;
+                    p.do_maximize = true;
+                  }
                   else
-                  if (axis_val > .1)
+                  if (axis_val > .1) {
                     p.apex_opt = (p.apex_opt & ~(ao_up)) | ao_down;
+                    p.do_maximize = true;
+                  }
                   else
                     p.apex_opt = (p.apex_opt & ~(ao_up | ao_down));
                   break;
@@ -1683,44 +1695,78 @@ int main(int argc, char *argv[])
 
           case SDL_JOYBUTTONDOWN:
             switch (event.jbutton.button) {
+              case 0:
+                if (!clamp_button_held) {
+                  // preset
+                  p.apex_r = apex_r_center = 12.5;
+                  p.burn_amount = burn_center = 0.00235;
+                  p.do_maximize = true;
+                  do_apex_r_tiny = false;
+                  burn_clamp = apex_r_clamp = false;
+                }
+                else
+                  p.do_stop = true;
+                break;
+
+              case 1:
+                if (!clamp_button_held) {
+                  // preset
+                  p.apex_r = apex_r_center = 23.5;
+                  p.burn_amount = burn_center = 0.00235;
+                  p.do_maximize = true;
+                  do_apex_r_tiny = false;
+                  burn_clamp = apex_r_clamp = false;
+                }
+                else {
+                  p.symm = symm_point;
+                  p.force_symm = true;
+                }
+                break;
+
+              case 2:
+                if (!clamp_button_held) {
+                  // preset
+                  p.apex_r = apex_r_center = 2.135;
+                  p.burn_amount = burn_center = 0.00435;
+                  p.do_maximize = true;
+                  do_apex_r_tiny = false;
+                  burn_clamp = apex_r_clamp = false;
+                }
+                else {
+                  p.symm = symm_x;
+                  p.force_symm = true;
+                }
+                break;
+
+              case 3:
+                if (!clamp_button_held) {
+                  // preset
+                  p.apex_r = apex_r_center = 23.5;
+                  p.burn_amount = burn_center = -.003;
+                  do_apex_r_tiny = false;
+                  burn_clamp = apex_r_clamp = false;
+                }
+                else {
+                  p.do_blank = true;
+                }
+                break;
+
               case 4:
                 p.do_maximize = true;
                 break;
 
-              case 2:
-                p.symm = symm_x;
-                p.force_symm = true;
-                break;
-
-              case 1:
-                p.symm = symm_point;
-                p.force_symm = true;
-                break;
-
-              case 0:
-                p.do_stop = true;
-                break;
-
-              case 3:
-                p.do_blank = true;
-                break;
-
               case 5:
+                clamp_button_held = true;
+
                 if (fabs(last_axis_apex_r) >= AXIS_MIN) {
                   apex_r_center = p.apex_r;
                   apex_r_clamp = true;
-                  apex_r_clamp_clamp = true;
                 }
-                else
-                    printf("last_axis_apex_r %f\n", last_axis_apex_r);
                 
                 if (fabs(last_axis_burn) >= AXIS_MIN) {
                   burn_center = p.burn_amount;
                   burn_clamp = true;
-                  burn_clamp_clamp = true;
                 }
-                else
-                    printf("last_axis_burn %f\n", last_axis_burn);
                 break;
 
               case 10:
@@ -1745,8 +1791,7 @@ int main(int argc, char *argv[])
             switch (event.jbutton.button) {
 
               case 5:
-                apex_r_clamp_clamp = false;
-                burn_clamp_clamp = false;
+                clamp_button_held = false;
                 break;
 
               case 9:
