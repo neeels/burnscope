@@ -471,9 +471,12 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
   }
 }
 
+#define UNPIXELIZE_BITS 5
+
 void render(SDL_Surface *screen, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf, 
-            int multiply_pixels, int colorshift, char pixelize)
+            int multiply_pixels, int colorshift, char pixelize,
+            unsigned char unpixelize)
 {   
   // Lock surface if needed
   if (SDL_MUSTLOCK(screen)) 
@@ -497,7 +500,33 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   int pixelize_offset_x = (pixelize_mask - (W & pixelize_mask)) >> 1;
   int pixelize_offset_y = (pixelize_mask - (H & pixelize_mask)) >> 1;
 
-#if 1
+  int unpixelize_mask = ~(INT_MAX << UNPIXELIZE_BITS);
+  static float unpixelize_offset = 0;
+  unpixelize_offset += .0035;
+  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (unpixelize_mask) ) + unpixelize/2));
+  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (unpixelize_mask) ) + unpixelize/2));
+
+  static float move_pixlz_offset = 0;
+  move_pixlz_offset += .1;
+  static int pxlz_dir = 0;
+  if (move_pixlz_offset > pixelize_mask) {
+    move_pixlz_offset = 0;
+    pxlz_dir = (pxlz_dir + 1) % 4;
+  }
+  
+  int _pixelize_offset = move_pixlz_offset * pixelize_mask / 5;
+  pixelize_offset_x = (pixelize_offset_x + _pixelize_offset) & pixelize_mask;
+  pixelize_offset_y = (pixelize_offset_y + _pixelize_offset) & pixelize_mask;
+  if (pxlz_dir & 1) {
+    pixelize_offset_x = -pixelize_offset_x;
+  }
+  if (pxlz_dir & 2) {
+    pixelize_offset_y = -pixelize_offset_y;
+  }
+
+#define AVERAGING 0
+
+#if AVERAGING
   pixel_t pmin, pmax, psum;
   pmin = pmax = *pixbufpos;
   psum = 0;
@@ -516,7 +545,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         //pix += palette->len * (1 + (int)(-pix) / palette->len);
         *pixbufpos = pix;
       }
-#if 1
+#if AVERAGING
       if (my == 0) {
         psum += pix;
         pmin = min(pmin, pix);
@@ -533,6 +562,13 @@ void render(SDL_Surface *screen, const int winW, const int winH,
       col %= palette->len;
       
       Uint32 raw = palette->colors[col];
+
+      if (unpixelize) {
+        if ((((x + _unpixelize_offset_x) & unpixelize_mask) <= unpixelize)
+            || (((y + _unpixelize_offset_y) & unpixelize_mask) <= unpixelize))
+          raw = ~raw;
+      }
+
       Uint32 *p = screenpos;
 
       for (my = 0; my < multiply_pixels; my++) {
@@ -548,7 +584,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     screenpos += one_multiplied_row_pitch;
   }
 
-#if 1
+#if AVERAGING
   printf("%.3f %.3f %.3f\r", pmin/PALETTE_LEN, pmax/PALETTE_LEN, psum/((float)W*H*PALETTE_LEN));
   fflush(stdout);
 #endif
@@ -621,7 +657,7 @@ palette_t palette;
 FILE *out_stream = NULL;
 FILE *out_params = NULL;
 FILE *in_params = NULL;
-int multiply_pixels = 2;
+int multiply_pixels = 1;
 int colorshift;
 
 typedef struct {
@@ -647,13 +683,14 @@ typedef struct {
   float wavy_amp;
   int please_drop_img;
   char pixelize;
+  char unpixelize;
 } params_t;
 
 const int params_file_id = 0x23315;
-const int params_version = 1;
+const int params_version = 2;
 
 init_params_t ip;
-params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1};
+params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1, 0, 0};
 
 
 int normalize_colorshift = 0;
@@ -705,7 +742,7 @@ int render_thread(void *arg) {
       SDL_SemWait(saving_done);
     }
 
-    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize);
+    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize, p.unpixelize);
 
     int t = SDL_GetTicks();
 
@@ -1186,6 +1223,7 @@ int main(int argc, char *argv[])
   }
 
   double apex_r_center = p.apex_r;
+  double seed_r_center = min_W_H / 20;
   double burn_center = p.burn_amount;
   bool do_apex_r_tiny = false;
 
@@ -1386,6 +1424,7 @@ int main(int argc, char *argv[])
     static bool clamp_button_held = false;
     static float last_axis_burn = 0;
     static bool burn_clamp = false;
+    static float axis_un_pixelize = 0;
 
     static char printcount = 0;
     if (printcount++ >= 10) {
@@ -1629,7 +1668,8 @@ int main(int argc, char *argv[])
                   break;
                 
                 case 0:
-                  p.seed_r = calc_axis_val(1, max(3, min_W_H/20), min_W_H/5, axis_val);
+                  p.seed_r = calc_axis_val(1, max(3, seed_r_center), min_W_H/5, axis_val);
+                  axis_un_pixelize = axis_val;
                   do_print = true;
                   break;
 
@@ -1684,7 +1724,12 @@ int main(int argc, char *argv[])
                   break;
 
                 case 2:
-                  p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
+                  if (axis_un_pixelize < -.2) {
+                    p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
+                  }
+                  else {
+                    p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
+                  }
                   break;
 
 
@@ -1746,6 +1791,7 @@ int main(int argc, char *argv[])
                   // preset
                   p.apex_r = apex_r_center = 23.5;
                   p.burn_amount = burn_center = -.003;
+                  p.seed_r = seed_r_center = min_W_H / 10;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
                 }
@@ -1761,15 +1807,17 @@ int main(int argc, char *argv[])
               case 5:
                 clamp_button_held = true;
 
+                apex_r_center = p.apex_r;
                 if (fabs(last_axis_apex_r) >= AXIS_MIN) {
-                  apex_r_center = p.apex_r;
                   apex_r_clamp = true;
                 }
                 
+                burn_center = p.burn_amount;
                 if (fabs(last_axis_burn) >= AXIS_MIN) {
-                  burn_center = p.burn_amount;
                   burn_clamp = true;
                 }
+
+                seed_r_center = p.seed_r;
                 break;
 
               case 10:
