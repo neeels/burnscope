@@ -788,31 +788,35 @@ SNDFILE *audio_sndfile = NULL;
 SDL_AudioSpec audio_spec;
 int audio_bytes_per_video_frame = 1;
 volatile int audio_too = 0;
+char *audio_path = NULL;
 
-void audio_play_callback(void *channels, Uint8 *stream, int len) {
+void audio_play_callback(void *userdata, Uint8 *stream, int len) {
   static int audio_bytes_played = 0;
+  int frame_size = audio_spec.channels * sizeof(short);
   int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
   int diff = want_bytes_played - audio_bytes_played;
   if (diff < -audio_bytes_per_video_frame) {
-    // audio too fast. do nothing for a frame.
-    //printf("audio too fast. %d\n", diff);
+    // audio too fast.
+    printf("audio too fast. %d < %d\n",  diff, -audio_bytes_per_video_frame);
     audio_too = -diff;
+    sf_seek(audio_sndfile, diff/frame_size, SEEK_CUR);
+    audio_bytes_played = want_bytes_played;
   }
-  else {
-    int read_blocks = 1;
-    if (diff > audio_bytes_per_video_frame) {
-      // audio too slow. read without playing.
-      read_blocks ++;
-      //printf("audio too slow. %d\n", diff);
-      audio_too = -diff;
-    }
+  else
+  if (diff > audio_bytes_per_video_frame) {
+    // audio too slow.
+    printf("audio too slow. %d > %d\n", diff, audio_bytes_per_video_frame);
+    audio_too = -diff;
+    sf_seek(audio_sndfile, diff/frame_size, SEEK_CUR);
+    audio_bytes_played = want_bytes_played;
+  }
 
-    while ((read_blocks--)){
-      if (! sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short)))
-        running = false;
-      audio_bytes_played += len;
-    }
+  if (! sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short))) {
+    printf("Audio file ended. Stop. (%s)\n", audio_path);
+    running = false;
   }
+  else
+    audio_bytes_played += len;
 }
 
 int main(int argc, char *argv[])
@@ -826,8 +830,6 @@ int main(int argc, char *argv[])
   char *out_stream_path = NULL;
   char *out_params_path = NULL;
   char *in_params_path = NULL;
-
-  char *audio_path = NULL;
 
   ip.random_seed = time(NULL);
 
@@ -1000,7 +1002,7 @@ int main(int argc, char *argv[])
   }
 
   if (out_params_path) {
-    out_params = fopen(out_params_path, "w");
+    out_params = fopen(out_params_path, "w+");
   }
 
   if (in_params_path) {
@@ -1226,18 +1228,60 @@ int main(int argc, char *argv[])
   double seed_r_center = min_W_H / 20;
   double burn_center = p.burn_amount;
   bool do_apex_r_tiny = false;
+  bool do_back = false;
+  bool do_rerecord_params = false;
+  int had_outparams = 0;
 
   while (running)
   {
+#define BACK_SPEED 2
+#define BACK_SEEK (BACK_SPEED + 1)
+    if (do_back && (frames_rendered > BACK_SEEK)) {
+      if (in_params) {
+        fseek(in_params, -BACK_SEEK * in_params_read_framelen, SEEK_CUR);
+      }
+      if (out_params) {
+        fseek(out_params, -BACK_SEEK * sizeof(p), SEEK_CUR);
+      }
+      frames_rendered -= BACK_SEEK;
+    }
+
+    bool skip_writing_out_params = false;
+
     if (in_params) {
-      if (! fread(&p, in_params_read_framelen, 1, in_params)) {
-        running = false;
+      int do_skip = 0;
+      if (do_rerecord_params) {
+        do_skip = in_params_framelen;
       }
-      else
-      if (in_params_framelen > in_params_read_framelen) {
-        // skip trailing bytes if params file frame is larger than my params_t.
-        fseek(in_params, in_params_framelen - in_params_read_framelen, SEEK_CUR);
+      else {
+        bool do_read_in_params = true;
+        if (out_params && (had_outparams > frames_rendered)) {
+          // user has previously played these params and recorded them to the
+          // out_params file, and has possibly recorded new parameters in the
+          // process. Read those that were written earlier.
+          if (fread(&p, sizeof(p), 1, out_params)) {
+            skip_writing_out_params = true; // <-- saves a seek + overwrite
+            do_read_in_params = false;
+          }
+        }
+        if (! do_read_in_params) {
+          do_skip = in_params_framelen;
+        }
+        else {
+          if (! fread(&p, in_params_read_framelen, 1, in_params)) {
+            printf("End of input parameters. Stop. (%s)\n", in_params_path);
+            running = false;
+          }
+          else
+          if (in_params_framelen > in_params_read_framelen) {
+            // skip trailing bytes if params file frame is larger than my params_t.
+            do_skip = in_params_framelen - in_params_read_framelen;
+          }
+        }
       }
+
+      if (do_skip)
+        fseek(in_params, do_skip, SEEK_CUR);
     }
 
     bool do_calc = true;
@@ -1330,8 +1374,9 @@ int main(int argc, char *argv[])
       // short interruption of if(do_calc) to save parameters frame.
     }
 
-    if (out_params) {
+    if (out_params && ! skip_writing_out_params) {
       fwrite(&p, sizeof(p), 1, out_params);
+      had_outparams = max(had_outparams, frames_rendered);
     }
     if (p.do_blank) {
       p.do_blank = false; // blanked above
@@ -1463,6 +1508,7 @@ int main(int argc, char *argv[])
             int c = event.key.keysym.sym;
             switch(c) {
               case SDLK_ESCAPE:
+                printf("Escape key. Stop.\n");
                 running = false;
                 break;
 
@@ -1620,6 +1666,7 @@ int main(int argc, char *argv[])
             break;
 
           case SDL_QUIT:
+            printf("SDL_QUIT. Stop.\n");
             running = false;
             break;
 
@@ -1827,7 +1874,16 @@ int main(int argc, char *argv[])
                 }
                 break;
 
-              case 9:
+              case 6:
+                do_back = true;
+                break;
+
+              case 7:
+                do_rerecord_params = ! do_rerecord_params;
+                if (do_rerecord_params)
+                  printf(" o  RECORD\n");
+                else
+                  printf(" >  PLAYBACK\n");
                 break;
 
               default:
@@ -1845,8 +1901,10 @@ int main(int argc, char *argv[])
                 clamp_button_held = false;
                 break;
 
-              case 9:
+              case 6:
+                do_back = false;
                 break;
+
 
               case 0:
                 p.do_go = true;
@@ -1886,6 +1944,8 @@ int main(int argc, char *argv[])
     }
   }
 
+  if (running)
+    printf("Main loop exited. Stop.\n");
   running = false;
 
   SDL_SemPost(please_render);
@@ -1925,6 +1985,29 @@ int main(int argc, char *argv[])
         "ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgb32 -s %dx%d -i %s  -vcodec libx264 -b 20000k %s.avi\n", W * multiply_pixels, H * multiply_pixels, out_stream_path, out_stream_path);
   }
   if (out_params) {
+    if (in_params) {
+      printf("Copying remaining parameters stream from in to out: %s --> %s\n",
+             in_params_path, out_params_path);
+      int copied = 0;
+      while (true) {
+        if (! fread(&p, in_params_read_framelen, 1, in_params)) {
+          printf("End of input parameters. Stop. (%s)\n", in_params_path);
+          break;
+        }
+        else
+        if (in_params_framelen > in_params_read_framelen) {
+          // skip trailing bytes if params file frame is larger than my params_t.
+          fseek(in_params, in_params_framelen - in_params_read_framelen, SEEK_CUR);
+        }
+        if (! fwrite(&p, sizeof(p), 1, out_params)) {
+          printf("Can't write to %s\n", out_params_path);
+          break;
+        }
+        copied ++;
+      }
+      printf("copied %d frames.\n", copied);
+    }
+
     fclose(out_params);
     out_params = NULL;
   }
