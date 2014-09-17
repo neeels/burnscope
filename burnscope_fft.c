@@ -79,6 +79,10 @@ static void *malloc_check(size_t len) {
   return p;
 }
 
+float frandom(void) {
+  return (float)(random()) / INT_MAX;
+}
+
 void set_color(palette_t *palette, int i, float r, float g, float b,
                SDL_PixelFormat *format) {
   if (i >= palette->len)
@@ -502,9 +506,9 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
   int unpixelize_mask = ~(INT_MAX << UNPIXELIZE_BITS);
   static float unpixelize_offset = 0;
-  unpixelize_offset += .0035;
-  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (unpixelize_mask) ) + unpixelize/2));
-  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (unpixelize_mask) ) + unpixelize/2));
+  unpixelize_offset += .035;
+  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (winW >> 4) ) + unpixelize/2));
+  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (winW >> 4) ) + unpixelize/2));
 
   static float move_pixlz_offset = 0;
   move_pixlz_offset += .1;
@@ -657,6 +661,8 @@ palette_t palette;
 FILE *out_stream = NULL;
 FILE *out_params = NULL;
 FILE *in_params = NULL;
+int in_params_content_start;
+int out_params_content_start;
 int multiply_pixels = 1;
 int colorshift;
 
@@ -789,26 +795,39 @@ SDL_AudioSpec audio_spec;
 int audio_bytes_per_video_frame = 1;
 volatile int audio_too = 0;
 char *audio_path = NULL;
+bool audio_sync_verbose = true;
 
 void audio_play_callback(void *userdata, Uint8 *stream, int len) {
+  bool smoothen = false;
   static int audio_bytes_played = 0;
+  static short last_frame[2];
   int frame_size = audio_spec.channels * sizeof(short);
   int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
+  
+  // eyes are slower than ears. The sound for the frame should rather come just
+  // after the frame is rendered than before.
+  want_bytes_played = max(0, want_bytes_played - audio_bytes_per_video_frame);
+
   int diff = want_bytes_played - audio_bytes_played;
+
   if (diff < -audio_bytes_per_video_frame) {
     // audio too fast.
-    printf("audio too fast. %d < %d\n",  diff, -audio_bytes_per_video_frame);
+    if (audio_sync_verbose)
+      printf("audio too fast. %d < %d\n",  diff, -audio_bytes_per_video_frame);
     audio_too = -diff;
     sf_seek(audio_sndfile, diff/frame_size, SEEK_CUR);
     audio_bytes_played = want_bytes_played;
+    smoothen = true;
   }
   else
   if (diff > audio_bytes_per_video_frame) {
     // audio too slow.
-    printf("audio too slow. %d > %d\n", diff, audio_bytes_per_video_frame);
+    if (audio_sync_verbose)
+      printf("audio too slow. %d > %d\n", diff, audio_bytes_per_video_frame);
     audio_too = -diff;
     sf_seek(audio_sndfile, diff/frame_size, SEEK_CUR);
     audio_bytes_played = want_bytes_played;
+    smoothen = true;
   }
 
   if (! sf_read_short(audio_sndfile, (short*)stream, len/sizeof(short))) {
@@ -817,6 +836,18 @@ void audio_play_callback(void *userdata, Uint8 *stream, int len) {
   }
   else
     audio_bytes_played += len;
+
+  if (smoothen) {
+    int i;
+    int ch;
+    short *x = (short*)stream;
+    for (i = 0; i < 15; i++) {
+      for (ch = 0; ch < audio_spec.channels; ch++) {
+        x[(i<<1) + ch] = (((i + 1) * x[(i<<1) + ch]) + ((15 - i) * last_frame[ch])) >> 4;
+      }
+    }
+  }
+  memcpy(&last_frame, stream + len - sizeof(last_frame), sizeof(last_frame));
 }
 
 int main(int argc, char *argv[])
@@ -958,7 +989,7 @@ int main(int argc, char *argv[])
 
   if ((W < 3) || (W > maxpixels) || (H < 3) || (H > maxpixels)) {
     fprintf(stderr, "width and/or height out of bounds: %dx%d\n", W, H);
-    exit(-1);
+    exit(1);
   }
 
   min_W_H = min(W, H);
@@ -976,7 +1007,7 @@ int main(int argc, char *argv[])
   if (((1. + p.burn_amount) > -minuscule) && ((1. + p.burn_amount) < minuscule)) {
     fprintf(stderr, "Underdampening too close to 1.0 (-u). Limit is %f.\n",
         minuscule);
-    exit(-1);
+    exit(1);
   }
 
   winW = W;
@@ -992,16 +1023,23 @@ int main(int argc, char *argv[])
   if ( (winW > maxpixels) || (winH > maxpixels) ) {
     fprintf(stderr, "pixel multiplication is too large: %dx%d times %d = %dx%d\n",
             W, H, multiply_pixels, winW, winH);
-    exit(-1);
+    exit(1);
   }
 
-  printf("%dx%d --> %dx%d\n", W, H, winW, winH);
-
   if (out_stream_path) {
+    if (access(out_stream_path, F_OK) == 0) {
+      fprintf(stderr, "file exists, will not overwrite: %s\n", out_stream_path);
+      exit(1);
+    }
     out_stream = fopen(out_stream_path, "w");
+    audio_sync_verbose = false;
   }
 
   if (out_params_path) {
+    if (access(out_params_path, F_OK) == 0) {
+      fprintf(stderr, "file exists, will not overwrite: %s\n", out_params_path);
+      exit(1);
+    }
     out_params = fopen(out_params_path, "w+");
   }
 
@@ -1009,6 +1047,7 @@ int main(int argc, char *argv[])
     in_params = fopen(in_params_path, "r");
   }
 
+  printf("burnscope: %dx%d  -->  video: %dx%d\n", W, H, winW, winH);
 
   int in_params_framelen = sizeof(p);
   int in_params_read_framelen = sizeof(p);
@@ -1046,6 +1085,8 @@ int main(int argc, char *argv[])
       printf("Parameter file frame size is larger, reading smaller frame: %d instead of %d\n", (int)sizeof(p), in_params_framelen);
       in_params_read_framelen = sizeof(p);
     }
+
+    in_params_content_start = ftell(in_params);
   }
 
   printf("random seed: %d\n", ip.random_seed);
@@ -1062,6 +1103,8 @@ int main(int argc, char *argv[])
     params_write(ip);
     l = sizeof(p);
     params_write(l);
+
+    out_params_content_start = ftell(out_params);
   }
 
 
@@ -1227,9 +1270,11 @@ int main(int argc, char *argv[])
   double apex_r_center = p.apex_r;
   double seed_r_center = min_W_H / 20;
   double burn_center = p.burn_amount;
+  double burn_jump = 0;
   bool do_apex_r_tiny = false;
   bool do_back = false;
   bool do_rerecord_params = false;
+  bool do_alternative_controls = false;
   int had_outparams = 0;
 
   while (running)
@@ -1386,7 +1431,8 @@ int main(int argc, char *argv[])
     }
 
     if (do_calc) {
-      while (p.n_seed) {
+      p.n_seed = max(0, min(100, p.n_seed));
+      while (running && p.n_seed) {
         p.n_seed --;
         int seedx = random() % W;
         int seedy = random() % H;
@@ -1726,21 +1772,45 @@ int main(int argc, char *argv[])
                   if (! burn_clamp) {
                     const double bmin = -.007;
                     const double bmax = .025;
-                    double burn_min = bmin + ((burn_center - bmin) * .2);
-                    double burn_max = min(bmax, bmin + ((burn_center - bmin) * 2));
+                    double _burn_center = burn_center + burn_jump;
+                    double burn_min = bmin + (_burn_center - bmin) * .2;
+                    double burn_max = min(bmax, bmin + ((_burn_center - bmin) * 2));
                     axis_val *= axis_val * axis_val;
-                    p.burn_amount = calc_axis_val(burn_min, burn_center, burn_max, (-axis_val));
+                    p.burn_amount = calc_axis_val(burn_min, _burn_center, burn_max, (-axis_val));
                     do_print = true;
                   }
                   last_axis_burn = axis_val;
                   break;
 
                 case 5:
-                  p.axis_seed = (axis_val + .5) / 1.5;
-                  if (p.axis_seed < 0)
-                    p.axis_seed = 0;
-                  p.axis_seed *= p.axis_seed;
+                  if (do_alternative_controls) {
+                    p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
+                  }
+                  else {
+                    p.axis_seed = (axis_val + .5) / 1.5;
+                    if (p.axis_seed < 0)
+                      p.axis_seed = 0;
+                    p.axis_seed *= p.axis_seed;
+                  }
                   break;
+
+                case 2:
+                  if (axis_un_pixelize < -.2) {
+                    if (do_alternative_controls) {
+                      p.axis_seed = (axis_val + .5) / 1.5;
+                      if (p.axis_seed < 0)
+                        p.axis_seed = 0;
+                      p.axis_seed *= p.axis_seed;
+                    }
+                    else 
+                      p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
+                  }
+                  else {
+                    p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
+                  }
+                  break;
+
+
 
                 case 6:
                   if (axis_val < -.1) {
@@ -1770,16 +1840,6 @@ int main(int argc, char *argv[])
                     p.apex_opt = (p.apex_opt & ~(ao_up | ao_down));
                   break;
 
-                case 2:
-                  if (axis_un_pixelize < -.2) {
-                    p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
-                  }
-                  else {
-                    p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
-                  }
-                  break;
-
-
                 default:
                   printf("axis %d = %.3f\n", event.jaxis.axis, axis_val);
                   break;
@@ -1794,7 +1854,8 @@ int main(int argc, char *argv[])
                 if (!clamp_button_held) {
                   // preset
                   p.apex_r = apex_r_center = 12.5;
-                  p.burn_amount = burn_center = 0.00235;
+                  burn_jump = 0;
+                  p.burn_amount = burn_center;
                   p.do_maximize = true;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
@@ -1806,8 +1867,9 @@ int main(int argc, char *argv[])
               case 1:
                 if (!clamp_button_held) {
                   // preset
-                  p.apex_r = apex_r_center = 23.5;
-                  p.burn_amount = burn_center = 0.00235;
+                  p.apex_r = apex_r_center = 20. + 7. * frandom();
+                  burn_jump = 0;
+                  p.burn_amount = burn_center + burn_jump;
                   p.do_maximize = true;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
@@ -1821,8 +1883,9 @@ int main(int argc, char *argv[])
               case 2:
                 if (!clamp_button_held) {
                   // preset
-                  p.apex_r = apex_r_center = 2.135;
-                  p.burn_amount = burn_center = 0.00435;
+                  p.apex_r = apex_r_center = 2.135 + 0.5*frandom();
+                  burn_jump = 0;
+                  p.burn_amount = burn_center + burn_jump;
                   p.do_maximize = true;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
@@ -1836,8 +1899,9 @@ int main(int argc, char *argv[])
               case 3:
                 if (!clamp_button_held) {
                   // preset
-                  p.apex_r = apex_r_center = 23.5;
-                  p.burn_amount = burn_center = -.003;
+                  p.apex_r = apex_r_center = 20. + 7. * frandom();
+                  burn_jump = -.0005 - burn_center;
+                  p.burn_amount = burn_center + burn_jump;
                   p.seed_r = seed_r_center = min_W_H / 10;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
@@ -1881,9 +1945,13 @@ int main(int argc, char *argv[])
               case 7:
                 do_rerecord_params = ! do_rerecord_params;
                 if (do_rerecord_params)
-                  printf(" o  RECORD\n");
+                  printf("\n o  RECORD    o  o  o  o  o  o  o  o  o  o  o  o  o  o\n\n");
                 else
-                  printf(" >  PLAYBACK\n");
+                  printf("\n >  playback  >  >  >  >  >  >  >  >  >  >  >  >  >  >\n\n");
+                break;
+
+              case 9:
+                do_alternative_controls = ! do_alternative_controls;
                 break;
 
               default:
@@ -1988,22 +2056,27 @@ int main(int argc, char *argv[])
     if (in_params) {
       printf("Copying remaining parameters stream from in to out: %s --> %s\n",
              in_params_path, out_params_path);
+
+      fseek(out_params, 0, SEEK_END);
+      int out_has_frames = (ftell(out_params) - out_params_content_start)
+                           / sizeof(p);
+      fseek(in_params, in_params_content_start
+                       + out_has_frames * in_params_framelen, SEEK_SET);
+
       int copied = 0;
       while (true) {
         if (! fread(&p, in_params_read_framelen, 1, in_params)) {
-          printf("End of input parameters. Stop. (%s)\n", in_params_path);
           break;
-        }
-        else
-        if (in_params_framelen > in_params_read_framelen) {
-          // skip trailing bytes if params file frame is larger than my params_t.
-          fseek(in_params, in_params_framelen - in_params_read_framelen, SEEK_CUR);
         }
         if (! fwrite(&p, sizeof(p), 1, out_params)) {
           printf("Can't write to %s\n", out_params_path);
           break;
         }
         copied ++;
+        if (in_params_framelen > in_params_read_framelen) {
+          // skip trailing bytes if params file frame is larger than my params_t.
+          fseek(in_params, in_params_framelen - in_params_read_framelen, SEEK_CUR);
+        }
       }
       printf("copied %d frames.\n", copied);
     }
