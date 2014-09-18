@@ -506,9 +506,9 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
   int unpixelize_mask = ~(INT_MAX << UNPIXELIZE_BITS);
   static float unpixelize_offset = 0;
-  unpixelize_offset += .035;
-  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (winW >> 4) ) + unpixelize/2));
-  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (winW >> 4) ) + unpixelize/2));
+  unpixelize_offset += .014;
+  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (winH/2) ) + unpixelize/2));
+  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (winW/2) ) + unpixelize/2));
 
   static float move_pixlz_offset = 0;
   move_pixlz_offset += .1;
@@ -1276,6 +1276,8 @@ int main(int argc, char *argv[])
   bool do_rerecord_params = false;
   bool do_alternative_controls = false;
   int had_outparams = 0;
+  int pixelize_clamp = 0;
+  int unpixelize_clamp = 0;
 
   while (running)
   {
@@ -1782,31 +1784,47 @@ int main(int argc, char *argv[])
                   last_axis_burn = axis_val;
                   break;
 
+
+#define DO_SEED \
+                      p.axis_seed = (axis_val + .5) / 1.5; \
+                      if (p.axis_seed < 0) \
+                        p.axis_seed = 0; \
+                      p.axis_seed *= p.axis_seed;
+
+#define DO_UNPIXELIZE \
+                    p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) ); \
+                    if (clamp_button_held || (p.unpixelize < unpixelize_clamp)) { \
+                      p.unpixelize = unpixelize_clamp; \
+                    } \
+                    else { \
+                      unpixelize_clamp = 0; \
+                    }
+
                 case 5:
                   if (do_alternative_controls) {
-                    p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
+                    DO_UNPIXELIZE
                   }
                   else {
-                    p.axis_seed = (axis_val + .5) / 1.5;
-                    if (p.axis_seed < 0)
-                      p.axis_seed = 0;
-                    p.axis_seed *= p.axis_seed;
+                    DO_SEED
                   }
                   break;
 
                 case 2:
                   if (axis_un_pixelize < -.2) {
                     if (do_alternative_controls) {
-                      p.axis_seed = (axis_val + .5) / 1.5;
-                      if (p.axis_seed < 0)
-                        p.axis_seed = 0;
-                      p.axis_seed *= p.axis_seed;
+                      DO_SEED
                     }
-                    else 
-                      p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) );
+                    else {
+                      DO_UNPIXELIZE
+                    }
                   }
                   else {
                     p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
+                    if (clamp_button_held || (p.pixelize < pixelize_clamp)) {
+                      p.pixelize = pixelize_clamp;
+                    }
+                    else
+                      pixelize_clamp = 0;
                   }
                   break;
 
@@ -1929,6 +1947,9 @@ int main(int argc, char *argv[])
                 }
 
                 seed_r_center = p.seed_r;
+
+                pixelize_clamp = p.pixelize;
+                unpixelize_clamp = p.unpixelize;
                 break;
 
               case 10:
