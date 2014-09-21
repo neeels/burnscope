@@ -1274,6 +1274,8 @@ int main(int argc, char *argv[])
   bool do_apex_r_tiny = false;
   bool do_back = false;
   bool do_rerecord_params = false;
+  bool do_rerecord_params_overlay = false;
+  bool do_rerecord_params_overlay_started = false;
   bool do_alternative_controls = false;
   int had_outparams = 0;
   int pixelize_clamp = 0;
@@ -1281,9 +1283,9 @@ int main(int argc, char *argv[])
 
   while (running)
   {
-#define BACK_SPEED 2
+#define BACK_SPEED 4
 #define BACK_SEEK (BACK_SPEED + 1)
-    if (do_back && (frames_rendered > BACK_SEEK)) {
+    if (do_back && (frames_rendered > (BACK_SEEK+1))) {
       if (in_params) {
         fseek(in_params, -BACK_SEEK * in_params_read_framelen, SEEK_CUR);
       }
@@ -1293,42 +1295,127 @@ int main(int argc, char *argv[])
       frames_rendered -= BACK_SEEK;
     }
 
-    bool skip_writing_out_params = false;
+    if (in_params || out_params) {
+      // read parameters from in_params (FILE*).
+      // If out_params (FILE*) is being written and the user has rewound back
+      // to a place where parameters are already written to out_params, read
+      // those.
+      // If overlay is requested, the live joystick commands are partly kept
+      // instead of being overwritten by the parameters read from file. In that
+      // case read to a separate location first, and only overwrite those
+      // values that have wiggled on the joystick since overlay recording
+      // started.
+      int in_params_skip_bytes = 0;
+      params_t *read_in_params_to = NULL;
+      static params_t p_from_file;
+      static params_t prev_p;
+      static params_t overlay_mask;
 
-    if (in_params) {
-      int do_skip = 0;
-      if (do_rerecord_params) {
-        do_skip = in_params_framelen;
+      if (do_rerecord_params && do_rerecord_params_overlay) {
+        if (do_rerecord_params_overlay_started) {
+          bzero(&overlay_mask, sizeof(overlay_mask));
+          do_rerecord_params_overlay_started = false;
+        }
+        else {
+          #define check_param(name) \
+            if (prev_p.name != p.name) {overlay_mask.name = 1; printf("%s\n", #name); }
+
+          check_param(do_stop);
+          check_param(apex_r);
+          check_param(apex_opt);
+          check_param(burn_amount);
+          check_param(axis_colorshift);
+          check_param(axis_seed);
+          check_param(do_stop);
+          check_param(do_go);
+          check_param(do_wavy);
+          check_param(do_stutter);
+          check_param(do_blank);
+          check_param(do_maximize);
+          check_param(force_symm);
+          check_param(symm);
+          check_param(seed_r);
+          check_param(n_seed);
+          check_param(wavy_amp);
+          check_param(please_drop_img);
+          check_param(pixelize);
+          check_param(unpixelize);
+
+          #undef check_param
+        }
       }
-      else {
+
+      if (do_rerecord_params) {
+        if (do_rerecord_params_overlay)
+          read_in_params_to = &p_from_file;
+        else
+          in_params_skip_bytes = in_params_framelen;
+      }
+      else
+        read_in_params_to = &p;
+
+      if (read_in_params_to) {
         bool do_read_in_params = true;
+
         if (out_params && (had_outparams > frames_rendered)) {
           // user has previously played these params and recorded them to the
           // out_params file, and has possibly recorded new parameters in the
           // process. Read those that were written earlier.
-          if (fread(&p, sizeof(p), 1, out_params)) {
-            skip_writing_out_params = true; // <-- saves a seek + overwrite
+          if (fread(read_in_params_to, sizeof(p), 1, out_params)) {
+            fseek(out_params, -sizeof(p), SEEK_CUR);
             do_read_in_params = false;
           }
         }
         if (! do_read_in_params) {
-          do_skip = in_params_framelen;
+          in_params_skip_bytes = in_params_framelen;
         }
-        else {
-          if (! fread(&p, in_params_read_framelen, 1, in_params)) {
+        else
+        if (in_params) {
+          if (! fread(read_in_params_to, in_params_read_framelen, 1, in_params)) {
             printf("End of input parameters. Stop. (%s)\n", in_params_path);
             running = false;
           }
           else
           if (in_params_framelen > in_params_read_framelen) {
             // skip trailing bytes if params file frame is larger than my params_t.
-            do_skip = in_params_framelen - in_params_read_framelen;
+            in_params_skip_bytes = in_params_framelen - in_params_read_framelen;
           }
         }
       }
 
-      if (do_skip)
-        fseek(in_params, do_skip, SEEK_CUR);
+      if (in_params_skip_bytes && in_params)
+        fseek(in_params, in_params_skip_bytes, SEEK_CUR);
+
+      if (do_rerecord_params && do_rerecord_params_overlay) {
+        #define check_param(name) \
+          if (! overlay_mask.name) p.name = p_from_file.name
+
+        check_param(do_stop);
+        check_param(apex_r);
+        check_param(apex_opt);
+        check_param(burn_amount);
+        check_param(axis_colorshift);
+        check_param(axis_seed);
+        check_param(do_stop);
+        check_param(do_go);
+        check_param(do_wavy);
+        check_param(do_stutter);
+        check_param(do_blank);
+        check_param(do_maximize);
+        check_param(force_symm);
+        check_param(symm);
+        check_param(seed_r);
+        check_param(n_seed);
+        check_param(wavy_amp);
+        check_param(please_drop_img);
+        check_param(pixelize);
+        check_param(unpixelize);
+
+        #undef check_param
+
+        memcpy(&prev_p, &p, sizeof(p));
+      }
+
     }
 
     bool do_calc = true;
@@ -1421,7 +1508,7 @@ int main(int argc, char *argv[])
       // short interruption of if(do_calc) to save parameters frame.
     }
 
-    if (out_params && ! skip_writing_out_params) {
+    if (out_params) {
       fwrite(&p, sizeof(p), 1, out_params);
       had_outparams = max(had_outparams, frames_rendered);
     }
@@ -1696,11 +1783,17 @@ int main(int argc, char *argv[])
                 p.apex_r = 1;
                 break;
 
+              case 13:
+                SDL_WM_ToggleFullScreen(screen);
+                break;
+
               default:
 
                 if ((c >= '2') && (c <= '9')) {
                   p.apex_r = ((float)min_W_H / 240.) * (1 + c - '1');
                 }
+                else
+                  printf("keysym = %c (%d)\n", (char)max(0x20,c), c);
                 break;
             }
             }
@@ -1961,14 +2054,18 @@ int main(int argc, char *argv[])
 
               case 6:
                 do_back = true;
+                do_rerecord_params = false;
                 break;
 
               case 7:
                 do_rerecord_params = ! do_rerecord_params;
-                if (do_rerecord_params)
-                  printf("\n o  RECORD    o  o  o  o  o  o  o  o  o  o  o  o  o  o\n\n");
-                else
-                  printf("\n >  playback  >  >  >  >  >  >  >  >  >  >  >  >  >  >\n\n");
+                do_rerecord_params_overlay = do_rerecord_params;
+                do_rerecord_params_overlay_started = do_rerecord_params_overlay;
+                break;
+
+              case 8:
+                do_rerecord_params = ! do_rerecord_params;
+                do_rerecord_params_overlay = false;
                 break;
 
               case 9:
@@ -2021,6 +2118,21 @@ int main(int argc, char *argv[])
         }
 
 
+      }
+
+      {
+        static bool was_do_rerecord_params = false;
+        if (was_do_rerecord_params != do_rerecord_params) {
+          if (do_rerecord_params) {
+            if (do_rerecord_params_overlay)
+              printf("\n o  RECORD OVERLAY  o  o  o  o  o  o  o  o  o  o  o  o\n\n");
+            else
+              printf("\n o  RECORD    o  o  o  o  o  o  o  o  o  o  o  o  o  o\n\n");
+          }
+          else
+            printf("\n >  playback  >  >  >  >  >  >  >  >  >  >  >  >  >  >\n\n");
+          was_do_rerecord_params = do_rerecord_params;
+        }
       }
 
       if (! running)
