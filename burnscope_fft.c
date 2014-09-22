@@ -19,37 +19,40 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sndfile.h>
+#include <limits.h>
 
 #include <stdint.h>
-
-#define PALETTE_LEN_BITS 12
-#define PALETTE_LEN (1 << PALETTE_LEN_BITS)
-#define SEED_VAL (0.5 * PALETTE_LEN)
 
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
 
-
 typedef double pixel_t;
 
+static void *malloc_check(size_t len) {
+  void *p;
+  p = malloc(len);
+  if (! p) {
+    printf("No mem.\n");
+    exit(-1);
+  }
+  return p;
+}
+
+float frandom(void) {
+  return (float)(random()) / INT_MAX;
+}
+
+
 #include "images.h"
+#include "palettes.h"
+
+#define SEED_VAL (0.5 * PALETTE_LEN)
+#define MAX_SEED_R (min_W_H/5)
 
 int n_images = 0;
 image_t *images = NULL;
 
 const float minuscule = 1e-3;
-
-typedef struct {
-  Uint32 *colors;
-  unsigned int len;
-} palette_t;
-
-typedef struct {
-  float pos;
-  float r;
-  float g;
-  float b;
-} palette_point_t;
 
 typedef enum {
   symm_none = 0,
@@ -69,129 +72,12 @@ char *symmetry_name[SYMMETRY_KINDS] = {
     "point-symmetrical"
   };
 
-static void *malloc_check(size_t len) {
-  void *p;
-  p = malloc(len);
-  if (! p) {
-    printf("No mem.\n");
-    exit(-1);
-  }
-  return p;
-}
-
-float frandom(void) {
-  return (float)(random()) / INT_MAX;
-}
-
-void set_color(palette_t *palette, int i, float r, float g, float b,
-               SDL_PixelFormat *format) {
-  if (i >= palette->len)
-    return;
-  palette->colors[i] = SDL_MapRGB(format, r * 255, g * 255, b * 255);
-}
-
-/* Generates a color palette, setting palette->colors and palette->len.
- * Allocates new memory for palette->colors (is not freed or reallocd).
- * 'n_colors' defines how many colors are generated in the palette.
- * 'points' is a definition colors at specific intervals, 'n_points' gives the
- * number of palette_point_t array elements in 'points'.
- * 'format' is used to generate video mode specific color data. */
-void make_palette(palette_t *palette, int n_colors,
-                  palette_point_t *points, int n_points,
-                  SDL_PixelFormat *format) {
-  int i;
-
-  palette->colors = malloc_check(n_colors * sizeof(Uint32));
-  palette->len = n_colors;
-
-
-  if (n_points < 1) {
-    for (i = 0; i < palette->len; i++) {
-      float val = (float)i / palette->len;
-      set_color(palette, i, val, val, val, format);
-    }
-    return;
-  }
-
-  palette_point_t *last_p = points;
-  palette_point_t *first_p = points;
-
-  for (i = 1; i < n_points; i ++) {
-    if (points[i].pos > last_p->pos)
-      last_p = &points[i];
-    if (points[i].pos < first_p->pos)
-      first_p = &points[i];
-  }
-  if (last_p->pos > 1.0) {
-    float norm_factor = last_p->pos;
-    for (i = 0; i < n_points; i ++)
-      points[i].pos /= norm_factor;
-  }
-  
-  // duplicate the last point to "the left", wrap back below zero.
-  palette_point_t p = *last_p;
-  p.pos -= 1.0;
-  // ...unless another point is defined there.
-  if (p.pos >= first_p->pos)
-    p = *first_p;
-
-  // also duplicate the first point to "the right".
-  palette_point_t post_last = *first_p;
-  post_last.pos += 1.0;
-
-  int color_pos = 0;
-
-  while(color_pos < n_colors) {
-
-    // look for the next point, the one with the next largest pos after p.pos
-    palette_point_t *next_p = NULL;
-    for (i = 0; i < n_points; i ++) {
-      float i_pos = points[i].pos;
-      if ((i_pos > p.pos)
-          &&
-          (
-           (! next_p)
-           || (i_pos < next_p->pos)
-          )
-         )
-        next_p = &points[i];
-    }
-
-    if (! next_p)
-      next_p = &post_last;
-
-    int next_color_pos = (int)(next_p->pos * n_colors) + 1;
-
-    if (next_color_pos <= color_pos)
-      next_color_pos = color_pos + 1;
-
-    for (; color_pos < next_color_pos; color_pos ++) {
-      float prevpos = p.pos;
-      float nextpos = next_p->pos;
-      float currentpos = ((float)color_pos) / n_colors;
-      float fade;
-      if ((nextpos - prevpos) < 1e-3)
-        fade = 0.5;
-      else
-        fade = (currentpos - prevpos) / (nextpos - prevpos);
-      float rfade = 1.0 - fade;
-      float r = rfade * p.r  +  fade * next_p->r;
-      float g = rfade * p.g  +  fade * next_p->g;
-      float b = rfade * p.b  +  fade * next_p->b;
-
-      set_color(palette, color_pos, r, g, b, format);
-    }
-
-    p = *next_p;
-  }
-}
-
-
 
 int W = 1920 / 3;
 int H = 1080 / 3;
 int min_W_H, max_W_H;
 pixel_t *pixbuf = NULL;
+int pixbuf_bytes = 0;
 pixel_t *apex = NULL;
 fftw_complex *pixbuf_f;
 fftw_plan plan_backward;
@@ -209,32 +95,17 @@ typedef enum {
 void make_apex(double apex_r, double burn_amount, char apex_opt);
 
 void fft_init(void) {
-  int x;
-  int y;
-
   fftw_init_threads();
   fftw_plan_with_nthreads(2);
 
-  pixbuf = (double *) malloc_check(sizeof(double) * W * H);
-  for(x = 0; x < W*H; x++) {
-#if 1
-      pixbuf[x] =  ( double ) rand ( ) / ( RAND_MAX );
-#else
-      pixbuf[x] =  0;
-#endif
-  }
-  pixbuf[(H/2) + (W/2)*H] = 1;
-  pixbuf[(H/2)+3 + (W/2 + 3)*H] = 1;
-  pixbuf[10 + (20)*H] = 1;
-  pixbuf[H-3 + (W-3)*H] = 1;
+  pixbuf_bytes = W * H * sizeof(pixel_t);
 
-  y = W * H;
-  for (x = 0; x < y; x++) {
-    pixbuf[x] *= PALETTE_LEN -10;
-  }
+  pixbuf = (pixel_t *) malloc_check(pixbuf_bytes);
+  bzero(pixbuf, pixbuf_bytes);
 
   int half_W = (W / 2) + 1;
-  apex = (double*)malloc_check(sizeof(double) * H * W);
+  apex = (pixel_t*)malloc_check(pixbuf_bytes);
+  bzero(apex, pixbuf_bytes);
   apex_f = fftw_malloc(sizeof(fftw_complex) * H * half_W);
   plan_apex = fftw_plan_dft_r2c_2d(H, W, apex, apex_f, FFTW_ESTIMATE);
 
@@ -242,7 +113,6 @@ void fft_init(void) {
   plan_forward = fftw_plan_dft_r2c_2d(H, W, pixbuf, pixbuf_f, FFTW_ESTIMATE);
   plan_backward = fftw_plan_dft_c2r_2d(H, W, pixbuf_f, pixbuf, FFTW_ESTIMATE);
 
-  bzero(apex, W*H*sizeof(pixel_t));
   make_apex(8.01, 1.005, 0);
 }
 
@@ -630,7 +500,7 @@ void seed(pixel_t *pixbuf, const int W, const int H, int x, int y,
   }
 }
 
-void seed_image(int x, int y, pixel_t *img, int w, int h) {
+void seed_image(int x, int y, pixel_t *img, int w, int h, pixel_t intensity) {
   pixel_t *pixbuf_pos = pixbuf + y * W + x;
   pixel_t *pixbuf_end = pixbuf + W * H;
   int pixbuf_pitch = max(0, W - w);
@@ -639,7 +509,8 @@ void seed_image(int x, int y, pixel_t *img, int w, int h) {
   int xx, yy;
   for (yy = 0; yy < h; yy++) {
     for (xx = 0; (xx < w) && (pixbuf_pos < pixbuf_end); xx++) {
-      (*pixbuf_pos) += (*img_pos) * (PALETTE_LEN >> 1);
+      pixel_t add = (*img_pos) * 0.42651 * intensity * PALETTE_LEN;
+      (*pixbuf_pos) += add;
       img_pos ++;
       pixbuf_pos ++;
     }
@@ -658,6 +529,7 @@ SDL_Surface *screen;
 int winW;
 int winH;
 palette_t palette;
+palette_t blended_palette;
 FILE *out_stream = NULL;
 FILE *out_params = NULL;
 FILE *in_params = NULL;
@@ -668,6 +540,7 @@ int colorshift;
 
 typedef struct {
   int random_seed;
+  bool start_blank;
 } init_params_t;
 
 typedef struct {
@@ -690,13 +563,16 @@ typedef struct {
   int please_drop_img;
   char pixelize;
   char unpixelize;
+  int please_drop_img_x;
+  int please_drop_img_y;
 } params_t;
 
 const int params_file_id = 0x23315;
 const int params_version = 2;
 
 init_params_t ip;
-params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false, false, false, symm_none, 3, 0, .006, -1, 0, 0};
+params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false,
+  false, false, symm_none, 3, 0, .006, -1, 0, 0, INT_MAX, INT_MAX};
 
 
 int normalize_colorshift = 0;
@@ -854,7 +730,6 @@ int main(int argc, char *argv[])
 {
   bool usage = false;
   bool error = false;
-  bool start_blank = false;
 
   int c;
 
@@ -863,6 +738,7 @@ int main(int argc, char *argv[])
   char *in_params_path = NULL;
 
   ip.random_seed = time(NULL);
+  ip.start_blank = false;
 
   while (1) {
     c = getopt(argc, argv, "bha:f:g:m:p:r:u:i:o:O:P:");
@@ -923,7 +799,7 @@ int main(int argc, char *argv[])
         break;
 
       case 'b':
-        start_blank = true;
+        ip.start_blank = true;
         break;
 
       case 'p':
@@ -1050,7 +926,7 @@ int main(int argc, char *argv[])
   printf("burnscope: %dx%d  -->  video: %dx%d\n", W, H, winW, winH);
 
   int in_params_framelen = sizeof(p);
-  int in_params_read_framelen = sizeof(p);
+  int in_params_read_framelen = 0;
 
   if (in_params) {
     int v;
@@ -1067,26 +943,32 @@ int main(int argc, char *argv[])
     }
     int ip_len;
     fread(&ip_len, sizeof(ip_len), 1, in_params);
-    if (ip_len < sizeof(ip)) {
+    int diff;
+    diff = ip_len - sizeof(ip);
+    if (diff < 0) {
       printf("Parameter file header is smaller: %d instead of %d\n", ip_len, (int)sizeof(ip));
     }
-    if (ip_len > sizeof(ip)) {
+    else
+    if (diff > 0) {
       printf("Parameter file header is larger, reading smaller header: %d instead of %d\n", (int)sizeof(ip), ip_len);
       ip_len = sizeof(ip);
     }
     fread(&ip, ip_len, 1, in_params);
+    if (diff > 0)
+      fseek(in_params, diff, SEEK_CUR);
 
     fread(&in_params_framelen, sizeof(in_params_framelen), 1, in_params);
-    in_params_framelen = in_params_framelen;
     if (in_params_framelen < sizeof(p)) {
       printf("Parameter file frame size is smaller: %d instead of %d\n", in_params_framelen, (int)sizeof(p));
     }
     if (in_params_framelen > sizeof(p)) {
       printf("Parameter file frame size is larger, reading smaller frame: %d instead of %d\n", (int)sizeof(p), in_params_framelen);
-      in_params_read_framelen = sizeof(p);
     }
 
+    in_params_read_framelen = min(in_params_framelen, sizeof(p));
+
     in_params_content_start = ftell(in_params);
+    printf("in_params start @%d\n", in_params_content_start);
   }
 
   printf("random seed: %d\n", ip.random_seed);
@@ -1108,7 +990,7 @@ int main(int argc, char *argv[])
   }
 
 
-  read_images("./images", &images, &n_images);
+  read_images("./images", &images, &n_images, W, H);
 
 
   if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK
@@ -1156,38 +1038,18 @@ int main(int argc, char *argv[])
     }
   }
 
-#if 1
-#define n_palette_points 11
-  palette_point_t palette_points[n_palette_points] = {
-    { 0./6, 1, 1, 1 },
-    { 0.5/6, 0.1, 1, .10 },
-    { 1./6, 0, .1, .5 },
-    { 1.5/6, .3, .3,1 },
-    { 3./6, 1, 1, 0 },
-    { 3.5/6, 0, 1, 1 },
-    { 4.5/6, 0, 0, 1 },
-    { 4.8/6, 1, 0, 0 },
-    { 5.25/6, 1, 1, 0 },
-    { 5.55/6, 1, .6, 0 },
-    { 5.85/6, .1,.0,0 },
-  };
-#else
-#define n_palette_points 2
-  palette_point_t palette_points[n_palette_points] = {
-    { 0, 0, 0, 0 },
-//    { 0.5, 0,0,0 },
-    { 0.5 + 3./256, 0, .8, 0 },
-  //  { 0.5 + 6./256, 0, .0, 0 },
-  };
-#endif
-
+  make_palettes(screen->format);
   make_palette(&palette, PALETTE_LEN,
-               palette_points, n_palette_points,
+               palette_defs[0],
+               screen->format);
+
+  make_palette(&blended_palette, PALETTE_LEN,
+               palette_defs[0],
                screen->format);
 
   fft_init();
 
-  if (! start_blank) {
+  if (! ip.start_blank) {
     int i, j;
     j = 2*p.apex_r + 1;
     j *= j;
@@ -1196,6 +1058,7 @@ int main(int argc, char *argv[])
       seed(pixbuf, W, H, random() % (W), random() % (H), SEED_VAL, p.apex_r);
     }
   }
+  else printf("blank\n");
 
   float wavy = 0;
   bool do_print = true;
@@ -1268,7 +1131,7 @@ int main(int argc, char *argv[])
   }
 
   double apex_r_center = p.apex_r;
-  double seed_r_center = min_W_H / 20;
+  double seed_r_center = MAX_SEED_R / 2;
   double burn_center = p.burn_amount;
   double burn_jump = 0;
   bool do_apex_r_tiny = false;
@@ -1280,6 +1143,13 @@ int main(int argc, char *argv[])
   int had_outparams = 0;
   int pixelize_clamp = 0;
   int unpixelize_clamp = 0;
+  int img_seeding = -1;
+  int img_seeding_slew = 0;
+
+  palette_t *is_palette = &palettes[0];
+  palette_t *want_palette = is_palette;
+  float palette_blend = 0;
+  bool stop_palette_transition = false;
 
   while (running)
   {
@@ -1287,7 +1157,7 @@ int main(int argc, char *argv[])
 #define BACK_SEEK (BACK_SPEED + 1)
     if (do_back && (frames_rendered > (BACK_SEEK+1))) {
       if (in_params) {
-        fseek(in_params, -BACK_SEEK * in_params_read_framelen, SEEK_CUR);
+        fseek(in_params, -BACK_SEEK * in_params_framelen, SEEK_CUR);
       }
       if (out_params) {
         fseek(out_params, -BACK_SEEK * sizeof(p), SEEK_CUR);
@@ -1305,11 +1175,12 @@ int main(int argc, char *argv[])
       // case read to a separate location first, and only overwrite those
       // values that have wiggled on the joystick since overlay recording
       // started.
-      int in_params_skip_bytes = 0;
-      params_t *read_in_params_to = NULL;
       static params_t p_from_file;
       static params_t prev_p;
       static params_t overlay_mask;
+
+      int in_params_skip_bytes = 0;
+      params_t *read_in_params_to = NULL;
 
       if (do_rerecord_params && do_rerecord_params_overlay) {
         if (do_rerecord_params_overlay_started) {
@@ -1340,6 +1211,8 @@ int main(int argc, char *argv[])
           check_param(please_drop_img);
           check_param(pixelize);
           check_param(unpixelize);
+          check_param(please_drop_img_x);
+          check_param(please_drop_img_y);
 
           #undef check_param
         }
@@ -1410,6 +1283,8 @@ int main(int argc, char *argv[])
         check_param(please_drop_img);
         check_param(pixelize);
         check_param(unpixelize);
+        check_param(please_drop_img_x);
+        check_param(please_drop_img_y);
 
         #undef check_param
 
@@ -1463,6 +1338,53 @@ int main(int argc, char *argv[])
       colorshift += colorshift_axis_accum;
     }
     colorshift %= PALETTE_LEN;
+
+    if ((want_palette != is_palette) && ! stop_palette_transition) {
+      palette_blend += (p.seed_r / MAX_SEED_R) / want_fps;
+      blend_palettes(&palette, is_palette, want_palette, min(1., palette_blend));
+      if (palette_blend >= 1.) {
+        is_palette = want_palette;
+        palette_blend = 0;
+      }
+    }
+
+    if (img_seeding >= 0) {
+      if (img_seeding_slew) {
+        img_seeding_slew --;
+      }
+      else {
+        int _img_seeding = img_seeding;
+        if (_img_seeding >= 10) {
+          _img_seeding -= 10;
+          if (_img_seeding < n_images) {
+            switch (_img_seeding) {
+              case 0:
+                p.please_drop_img_x = -images[_img_seeding].width;
+                p.please_drop_img_y = -images[_img_seeding].height;
+                break;
+
+              case 1:
+                p.please_drop_img_x = - images[_img_seeding].width/2;
+                p.please_drop_img_y = +5;
+                break;
+
+              case 2:
+                p.please_drop_img_x = 0;
+                p.please_drop_img_y = +5 + images[1].height + 5;
+                break;
+
+              default:
+              case 3:
+                p.please_drop_img_x = -images[_img_seeding].width / 2;
+                p.please_drop_img_y = -images[_img_seeding].height / 2;
+                break;
+            }
+          }
+        }
+        p.please_drop_img = _img_seeding;
+        img_seeding_slew = 0; // 2
+      }
+    }
 
     
     if (do_calc) {
@@ -1537,10 +1459,35 @@ int main(int argc, char *argv[])
           seed(pixbuf, W, H, W-1 - seedx, H-1 - seedy, SEED_VAL, p.seed_r);
       }
 
-      if (p.please_drop_img >= 0 && p.please_drop_img < n_images) {
-        image_t *img = &images[p.please_drop_img];
-        seed_image(random() % (30 + W - img->width), random() %(30 + H- img->height), img->data, img->width, img->height);
+      if (p.please_drop_img >= 0) {
+        if (p.please_drop_img < n_images) {
+          int W2 = W >> 1;
+          int H2 = H >> 1;
+          image_t *img = &images[p.please_drop_img];
+
+          if (p.please_drop_img_x == INT_MAX)
+            p.please_drop_img_x = random() % (30 + W - img->width);
+          else
+            p.please_drop_img_x += W2;
+
+          if (p.please_drop_img_y == INT_MAX)
+            p.please_drop_img_y = random() % (30 + H - img->height);
+          else
+            p.please_drop_img_y += H2;
+
+          float intensity = p.seed_r / MAX_SEED_R;
+          intensity = .001 + .4 * intensity * intensity * intensity * intensity;
+#if 0
+          printf("img x%d y%d %d %f\n", p.please_drop_img_x, p.please_drop_img_y,
+                 p.please_drop_img, intensity);
+#endif
+
+          seed_image(p.please_drop_img_x, p.please_drop_img_y, img->data, img->width, img->height,
+                     intensity);
+        }
         p.please_drop_img = -1;
+        p.please_drop_img_x = INT_MAX;
+        p.please_drop_img_y = INT_MAX;
       }
 
 
@@ -1565,9 +1512,9 @@ int main(int argc, char *argv[])
 
       // complex multiplication --> convolution of pixbuf with apex.
       for (x = 0; x < H*half_W; x++) {
-        double *pf = pixbuf_f[x];
-        double *af = apex_f[x];
-        double a, b, c, d;
+        pixel_t *pf = pixbuf_f[x];
+        pixel_t *af = apex_f[x];
+        pixel_t a, b, c, d;
         a = pf[0]; b = pf[1];
         c = af[0]; d = af[1];
         pf[0] = (a*c - b*d);
@@ -1628,7 +1575,6 @@ int main(int argc, char *argv[])
     }
 
     while (running) {
-
       SDL_Event event;
       while (SDL_PollEvent(&event)) 
       {
@@ -1640,169 +1586,257 @@ int main(int argc, char *argv[])
 
 
             {
-            int c = event.key.keysym.sym;
-            switch(c) {
-              case SDLK_ESCAPE:
-                printf("Escape key. Stop.\n");
-                running = false;
-                break;
+              int c = event.key.keysym.sym;
+              palette_t *pal_selected = NULL;
 
-              case SDLK_RIGHT:
-                p.burn_amount += .0002;
-                break;
-              case SDLK_LEFT:
-                p.burn_amount -= .0002;
-                break;
-              case SDLK_UP:
-                p.wavy_amp += .0001;
-                break;
-              case SDLK_DOWN:
-                p.wavy_amp -= .0001;
-                break;
+              switch(c) {
+                case SDLK_ESCAPE:
+                  printf("Escape key. Stop.\n");
+                  running = false;
+                  break;
 
-              case ' ':
-                p.n_seed ++;
-                seed_key_down = true;
-                break;
+                case SDLK_RIGHT:
+                  p.burn_amount += .0002;
+                  break;
+                case SDLK_LEFT:
+                  p.burn_amount -= .0002;
+                  break;
+                case SDLK_UP:
+                  p.wavy_amp += .0001;
+                  break;
+                case SDLK_DOWN:
+                  p.wavy_amp -= .0001;
+                  break;
 
-              case 'b':
-                p.do_blank = true;
-                break;
+                case ' ':
+                  p.n_seed ++;
+                  seed_key_down = true;
+                  break;
 
-              case 'm':
-                p.symm = (p.symm + 1) % SYMMETRY_KINDS;
-                break;
+                case 'n':
+                  p.do_blank = true;
+                  break;
 
-              case '\\':
-                p.symm = symm_x;
-                p.force_symm = true;
-                break;
+                case 'm':
+                  p.symm = (p.symm + 1) % SYMMETRY_KINDS;
+                  break;
 
-              case '\'':
-                p.symm = symm_point;
-                p.force_symm = true;
-                break;
+                case '\\':
+                  p.symm = symm_x;
+                  p.force_symm = true;
+                  break;
 
-              case ';':
-                p.symm = symm_none;
-                break;
+                case '\'':
+                  p.symm = symm_point;
+                  p.force_symm = true;
+                  break;
 
-              case 'q':
-                p.burn_amount -= .002;
-                break;
-              case 'w':
-                p.burn_amount -= .0003;
-                break;
-              case 'e':
-                p.burn_amount = .005;
-                p.apex_r = 8.01 * min_W_H / 240.;
-                break;
-              case 'r':
-                p.burn_amount += .0003;
-                break;
-              case 't':
-                p.burn_amount += .002;
-                break;
+                case ';':
+                  p.symm = symm_none;
+                  break;
 
-              case '`':
-                p.do_wavy = ! p.do_wavy;
-                break;
+                case 'q':
+                  p.burn_amount -= .002;
+                  break;
+                case 'w':
+                  p.burn_amount -= .0003;
+                  break;
+                case 'e':
+                  p.burn_amount = .005;
+                  p.apex_r = 8.01 * min_W_H / 240.;
+                  break;
+                case 'r':
+                  p.burn_amount += .0003;
+                  break;
+                case 't':
+                  p.burn_amount += .002;
+                  break;
 
-              case '-':
-                p.apex_r = max(0.5, p.apex_r / 1.1);
-                break;
+                case '`':
+                  p.do_wavy = ! p.do_wavy;
+                  break;
 
-              case '+':
-              case '=':
-                p.apex_r = min(W, p.apex_r * 1.1);
-                break;
+                case '-':
+                  p.apex_r = max(0.5, p.apex_r / 1.1);
+                  break;
 
-              case '/':
-                p.do_go = true;
-                p.do_stutter = false;
-                break;
+                case '+':
+                case '=':
+                  p.apex_r = min(W, p.apex_r * 1.1);
+                  break;
 
-              case '.':
-                p.do_stop = true;
-                break;
+                case '/':
+                  p.do_go = true;
+                  p.do_stutter = false;
+                  break;
 
-              case ',':
-                p.do_stutter = ! p.do_stutter;
-                p.do_go = true;
-                break;
+                case '.':
+                  p.do_stop = true;
+                  break;
 
-              case 'u':
-                p.please_drop_img = 0;
-                break;
+                case ',':
+                  p.do_stutter = ! p.do_stutter;
+                  p.do_go = true;
+                  break;
 
-              case 'i':
-                p.please_drop_img = 1;
-                break;
+                case 'a':
+                  p.apex_opt = 0;
+                  break;
 
-              case 'o':
-                p.please_drop_img = 2;
-                break;
+                case 's':
+                  p.apex_opt = 1;
+                  break;
 
-              case 'p':
-                p.please_drop_img = 3;
-                break;
+                case 'd':
+                  p.apex_opt = 2;
+                  break;
 
-              case 'a':
-                p.apex_opt = 0;
-                break;
+                case 'f':
+                  p.apex_opt = 3;
+                  break;
 
-              case 's':
-                p.apex_opt = 1;
-                break;
+                case 'g':
+                  p.apex_opt = 4;
+                  break;
 
-              case 'd':
-                p.apex_opt = 2;
-                break;
+                case 'l':
+                  wavy_speed += .5;
+                  break;
 
-              case 'f':
-                p.apex_opt = 3;
-                break;
+                case 'k':
+                  wavy_speed -= .5;
+                  break;
 
-              case 'g':
-                p.apex_opt = 4;
-                break;
+                case 13:
+                  SDL_WM_ToggleFullScreen(screen);
+                  break;
 
-              case '0':
-                p.apex_r += (float)min_W_H / 48;
-                break;
+                case 'y':
+                  img_seeding = 14;
+                  break;
 
-              case 'l':
-                wavy_speed += .5;
-                break;
+                case 'u':
+                  img_seeding = 10;
+                  break;
 
-              case 'k':
-                wavy_speed -= .5;
-                break;
+                case 'i':
+                  img_seeding = 11;
+                  break;
 
-              case '1':
-                p.apex_r = 1;
-                break;
+                case 'o':
+                  img_seeding = 12;
+                  break;
 
-              case 13:
-                SDL_WM_ToggleFullScreen(screen);
-                break;
+                case 'p':
+                  img_seeding = 13;
+                  break;
 
-              default:
+                case 'z':
+                  pal_selected = &palettes[0];
+                  break;
 
-                if ((c >= '2') && (c <= '9')) {
-                  p.apex_r = ((float)min_W_H / 240.) * (1 + c - '1');
+                case 'x':
+                  pal_selected = &palettes[1];
+                  break;
+
+                case 'c':
+                  pal_selected = &palettes[2];
+                  break;
+
+                case 'v':
+                  pal_selected = &palettes[3];
+                  break;
+
+                case 'b':
+                  pal_selected = &palettes[4];
+                  break;
+
+                default:
+
+                  if ((c >= '1') && (c <= '9')) {
+                    int img_idx = c - '1';
+                    img_seeding = img_idx;
+                  }
+                  else
+                    printf("keysym = %c (%d)\n", (char)max(0x20,c), c);
+                  break;
+              }
+
+
+              if (pal_selected) {
+                if (want_palette != is_palette) 
+                {
+                  if (pal_selected == want_palette)
+                  {
+                    stop_palette_transition = ! stop_palette_transition;
+                  }
+                  else
+                  if (pal_selected == is_palette) {
+                    stop_palette_transition = false;
+                    palette_t *tmp = is_palette;
+                    is_palette = want_palette;
+                    want_palette = tmp;
+                    palette_blend = 1. - palette_blend;
+                  }
+                  else {
+                    memcpy(blended_palette.colors, palette.colors,
+                           PALETTE_LEN * sizeof(Uint32));
+                    is_palette = &blended_palette;
+                    want_palette = pal_selected;
+                    stop_palette_transition = false;
+                    palette_blend = 0;
+                  }
                 }
                 else
-                  printf("keysym = %c (%d)\n", (char)max(0x20,c), c);
-                break;
-            }
+                {
+                  want_palette = pal_selected;
+                  stop_palette_transition = false;
+                }
+              }
             }
             do_print = true;
             break;
 
           case SDL_KEYUP:
-            if (event.key.keysym.sym == ' ') {
-              seed_key_down = false;
+            {
+              int c = event.key.keysym.sym;
+
+              int img_seeding_off = -2;
+              switch (c) {
+                case ' ':
+                  seed_key_down = false;
+
+                case 'u':
+                  img_seeding_off = 10;
+                  break;
+
+                case 'i':
+                  img_seeding_off = 11;
+                  break;
+
+                case 'o':
+                  img_seeding_off = 12;
+                  break;
+
+                case 'p':
+                  img_seeding_off = 13;
+                  break;
+
+                case 'y':
+                  img_seeding_off = 14;
+                  break;
+
+                default:
+                  if ((c >= '1') && (c <= '9')) {
+                    img_seeding_off = c - '1';
+                  }
+                  break;
+              }
+
+              if (img_seeding == img_seeding_off) {
+                img_seeding = -1;
+                img_seeding_slew = 0;
+              }
             }
             break;
 
@@ -1838,7 +1872,7 @@ int main(int argc, char *argv[])
                     apex_r_clamp = false;
                   if (! (apex_r_clamp)) {
                     if (do_apex_r_tiny) {
-                      p.apex_r = calc_axis_val(1.00001, 1.000275, 1.004, axis_val);
+                      p.apex_r = calc_axis_val(1.0002, 1.000275, 1.04, axis_val);
                     }
                     else {
                       double apex_r_min = max(1.03, apex_r_center * 0.1);
@@ -1856,7 +1890,7 @@ int main(int argc, char *argv[])
                   break;
                 
                 case 0:
-                  p.seed_r = calc_axis_val(1, max(3, seed_r_center), min_W_H/5, axis_val);
+                  p.seed_r = calc_axis_val(1, max(3, seed_r_center), MAX_SEED_R, axis_val);
                   axis_un_pixelize = axis_val;
                   do_print = true;
                   break;
@@ -1962,7 +1996,7 @@ int main(int argc, char *argv[])
           case SDL_JOYBUTTONDOWN:
             switch (event.jbutton.button) {
               case 0:
-                if (!clamp_button_held) {
+                if (! do_alternative_controls) {
                   // preset
                   p.apex_r = apex_r_center = 12.5;
                   burn_jump = 0;
@@ -1976,7 +2010,7 @@ int main(int argc, char *argv[])
                 break;
 
               case 1:
-                if (!clamp_button_held) {
+                if (! do_alternative_controls) {
                   // preset
                   p.apex_r = apex_r_center = 20. + 7. * frandom();
                   burn_jump = 0;
@@ -1992,7 +2026,7 @@ int main(int argc, char *argv[])
                 break;
 
               case 2:
-                if (!clamp_button_held) {
+                if (! do_alternative_controls) {
                   // preset
                   p.apex_r = apex_r_center = 2.135 + 0.5*frandom();
                   burn_jump = 0;
@@ -2008,12 +2042,12 @@ int main(int argc, char *argv[])
                 break;
 
               case 3:
-                if (!clamp_button_held) {
+                if (! do_alternative_controls) {
                   // preset
                   p.apex_r = apex_r_center = 20. + 7. * frandom();
                   burn_jump = -.0005 - burn_center;
                   p.burn_amount = burn_center + burn_jump;
-                  p.seed_r = seed_r_center = min_W_H / 10;
+                  p.seed_r = seed_r_center = MAX_SEED_R / 2;
                   do_apex_r_tiny = false;
                   burn_clamp = apex_r_clamp = false;
                 }
@@ -2034,7 +2068,7 @@ int main(int argc, char *argv[])
                   apex_r_clamp = true;
                 }
                 
-                burn_center = p.burn_amount;
+                burn_center = p.burn_amount - burn_jump;
                 if (fabs(last_axis_burn) >= AXIS_MIN) {
                   burn_clamp = true;
                 }
@@ -2049,6 +2083,8 @@ int main(int argc, char *argv[])
                 do_apex_r_tiny = ! do_apex_r_tiny;
                 if (do_apex_r_tiny) {
                   p.apex_r = 1.000275;
+                  burn_jump = 0;
+                  p.burn_amount = burn_center;
                 }
                 break;
 
@@ -2182,8 +2218,13 @@ int main(int argc, char *argv[])
   if (out_stream) {
     fclose(out_stream);
     out_stream = NULL;
+
     printf("suggestion:\n"
-        "ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgb32 -s %dx%d -i %s  -vcodec libx264 -b 20000k %s.avi\n", W * multiply_pixels, H * multiply_pixels, out_stream_path, out_stream_path);
+        "ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgb32 -s %dx%d -i %s ",
+        winW, winH, out_stream_path);
+    if (audio_path)
+      printf("-i %s -acodec ac3 ", audio_path);
+    printf("-vcodec mpeg4 -q 1 %s.%d.mp4\n", out_stream_path, winH);
   }
   if (out_params) {
     if (in_params) {
