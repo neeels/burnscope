@@ -1613,7 +1613,7 @@ int main(int argc, char *argv[])
                   seed_key_down = true;
                   break;
 
-                case 'n':
+                case 8: // del
                   p.do_blank = true;
                   break;
 
@@ -1749,6 +1749,10 @@ int main(int argc, char *argv[])
 
                 case 'b':
                   pal_selected = &palettes[4];
+                  break;
+
+                case 'n':
+                  pal_selected = &palettes[5];
                   break;
 
                 default:
