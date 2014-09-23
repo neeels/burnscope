@@ -292,13 +292,15 @@ void make_palettes(SDL_PixelFormat *format) {
 void blend_palettes(palette_t *dst, palette_t *src1, palette_t *src2, float blend) {
   assert((dst->len == src1->len) && (dst->len == src2->len));
 
+  float ba = min(1., (1.-blend) * 2);
+  float bb = min(1., blend * 2);
   int i, j;
   for (i = 0; i < dst->len; i++) {
     unsigned char *a = (unsigned char*)(&src1->colors[i]);
     unsigned char *b = (unsigned char*)(&src2->colors[i]);
     unsigned char *x = (unsigned char*)(&dst->colors[i]);
     for (j = 0; j < 3; j++) {
-      x[j] = (1. - blend) * a[j] + blend * b[j];
+      x[j] = max(ba * a[j], bb * b[j]);
     }
   }
 }

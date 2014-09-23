@@ -565,6 +565,7 @@ typedef struct {
   char unpixelize;
   int please_drop_img_x;
   int please_drop_img_y;
+  int palette_selected;
 } params_t;
 
 const int params_file_id = 0x23315;
@@ -572,7 +573,7 @@ const int params_version = 2;
 
 init_params_t ip;
 params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false,
-  false, false, symm_none, 3, 0, .006, -1, 0, 0, INT_MAX, INT_MAX};
+  false, false, symm_none, 23, 0, .006, -1, 0, 0, INT_MAX, INT_MAX, -1};
 
 
 int normalize_colorshift = 0;
@@ -1339,6 +1340,39 @@ int main(int argc, char *argv[])
     }
     colorshift %= PALETTE_LEN;
 
+    if ((p.palette_selected >= 0)
+        && (p.palette_selected < n_palettes))
+    {
+      palette_t *pal_selected = &palettes[p.palette_selected];
+      if (want_palette != is_palette) 
+      {
+        if (pal_selected == want_palette)
+        {
+          stop_palette_transition = ! stop_palette_transition;
+        }
+        else
+        if (pal_selected == is_palette) {
+          stop_palette_transition = false;
+          palette_t *tmp = is_palette;
+          is_palette = want_palette;
+          want_palette = tmp;
+          palette_blend = 1. - palette_blend;
+        }
+        else {
+          memcpy(blended_palette.colors, palette.colors,
+                 PALETTE_LEN * sizeof(Uint32));
+          is_palette = &blended_palette;
+          want_palette = pal_selected;
+          stop_palette_transition = false;
+          palette_blend = 0;
+        }
+      }
+      else
+      {
+        want_palette = pal_selected;
+        stop_palette_transition = false;
+      }
+    }
     if ((want_palette != is_palette) && ! stop_palette_transition) {
       palette_blend += (p.seed_r / MAX_SEED_R) / want_fps;
       blend_palettes(&palette, is_palette, want_palette, min(1., palette_blend));
@@ -1434,11 +1468,19 @@ int main(int argc, char *argv[])
       fwrite(&p, sizeof(p), 1, out_params);
       had_outparams = max(had_outparams, frames_rendered);
     }
-    if (p.do_blank) {
-      p.do_blank = false; // blanked above
-    }
-    if (p.do_maximize) {
-      p.do_maximize = false; // maximized above
+
+    // clear those values that were handled above but still needed to be
+    // recorded to out_params:
+    {
+      if (p.do_blank) {
+        p.do_blank = false;
+      }
+      if (p.do_maximize) {
+        p.do_maximize = false;
+      }
+      if (p.palette_selected >= 0) {
+        p.palette_selected = -1;
+      }
     }
 
     if (do_calc) {
@@ -1587,7 +1629,6 @@ int main(int argc, char *argv[])
 
             {
               int c = event.key.keysym.sym;
-              palette_t *pal_selected = NULL;
 
               switch(c) {
                 case SDLK_ESCAPE:
@@ -1731,28 +1772,36 @@ int main(int argc, char *argv[])
                   img_seeding = 13;
                   break;
 
+                case ']':
+                  p.axis_colorshift += 0.1;
+                  break;
+
+                case '[':
+                  p.axis_colorshift -= 0.1;
+                  break;
+
                 case 'z':
-                  pal_selected = &palettes[0];
+                  p.palette_selected = 0;
                   break;
 
                 case 'x':
-                  pal_selected = &palettes[1];
+                  p.palette_selected = 1;
                   break;
 
                 case 'c':
-                  pal_selected = &palettes[2];
+                  p.palette_selected = 2;
                   break;
 
                 case 'v':
-                  pal_selected = &palettes[3];
+                  p.palette_selected = 3;
                   break;
 
                 case 'b':
-                  pal_selected = &palettes[4];
+                  p.palette_selected = 4;
                   break;
 
                 case 'n':
-                  pal_selected = &palettes[5];
+                  p.palette_selected = 5;
                   break;
 
                 default:
@@ -1767,36 +1816,6 @@ int main(int argc, char *argv[])
               }
 
 
-              if (pal_selected) {
-                if (want_palette != is_palette) 
-                {
-                  if (pal_selected == want_palette)
-                  {
-                    stop_palette_transition = ! stop_palette_transition;
-                  }
-                  else
-                  if (pal_selected == is_palette) {
-                    stop_palette_transition = false;
-                    palette_t *tmp = is_palette;
-                    is_palette = want_palette;
-                    want_palette = tmp;
-                    palette_blend = 1. - palette_blend;
-                  }
-                  else {
-                    memcpy(blended_palette.colors, palette.colors,
-                           PALETTE_LEN * sizeof(Uint32));
-                    is_palette = &blended_palette;
-                    want_palette = pal_selected;
-                    stop_palette_transition = false;
-                    palette_blend = 0;
-                  }
-                }
-                else
-                {
-                  want_palette = pal_selected;
-                  stop_palette_transition = false;
-                }
-              }
             }
             do_print = true;
             break;
