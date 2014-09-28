@@ -1398,6 +1398,8 @@ int main(int argc, char *argv[])
     if ((want_palette != is_palette) && ! stop_palette_transition) {
       float palette_blend_was = palette_blend;
       palette_blend += p.palette_blend_speed / want_fps;
+      printf("palette_blend %f (%f/%f=%f)\n", palette_blend, p.palette_blend_speed, want_fps,
+        p.palette_blend_speed / want_fps);
       blend_palettes(&palette, is_palette, want_palette, min(1., palette_blend));
       if (palette_blend >= 1.) {
         is_palette = want_palette;
@@ -1937,7 +1939,8 @@ int main(int argc, char *argv[])
                   p.seed_r = calc_axis_val(1, max(3, seed_r_center), MAX_SEED_R, axis_val);
                   axis_un_pixelize = axis_val;
                   p.seed_intensity = axis_val;
-                  p.palette_blend_speed = axis_val;
+                  p.palette_blend_speed = (axis_val + 1)/2;
+                  printf("p.palette_blend_speed %f\n", p.palette_blend_speed);
                   do_print = true;
                   break;
 
