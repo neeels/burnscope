@@ -741,6 +741,7 @@ int main(int argc, char *argv[])
 {
   bool usage = false;
   bool error = false;
+  bool cmdline_requests_start_blank = false;
 
   int c;
 
@@ -810,7 +811,7 @@ int main(int argc, char *argv[])
         break;
 
       case 'b':
-        ip.start_blank = true;
+        cmdline_requests_start_blank = true;
         break;
 
       case 'p':
@@ -985,6 +986,10 @@ int main(int argc, char *argv[])
   printf("random seed: %d\n", ip.random_seed);
   srandom(ip.random_seed);
 
+  if (cmdline_requests_start_blank) {
+    ip.start_blank = true;
+  }
+
   if (out_params) {
 #define params_write(what) \
     fwrite(&what, sizeof(what), 1, out_params)
@@ -1082,7 +1087,9 @@ int main(int argc, char *argv[])
       seed(pixbuf, W, H, random() % (W), random() % (H), SEED_VAL, p.apex_r);
     }
   }
-  else printf("blank\n");
+  else {
+    printf("blank\n");
+  }
 
   float wavy = 0;
   bool do_print = true;
@@ -1237,6 +1244,9 @@ int main(int argc, char *argv[])
           check_param(unpixelize);
           check_param(please_drop_img_x);
           check_param(please_drop_img_y);
+          check_param(palette_selected);
+          check_param(palette_blend_speed);
+          check_param(seed_intensity);
 
           #undef check_param
         }
@@ -1309,6 +1319,9 @@ int main(int argc, char *argv[])
         check_param(unpixelize);
         check_param(please_drop_img_x);
         check_param(please_drop_img_y);
+        check_param(palette_selected);
+        check_param(palette_blend_speed);
+        check_param(seed_intensity);
 
         #undef check_param
 
@@ -1477,7 +1490,6 @@ int main(int argc, char *argv[])
         static bool relaunch = false;
         axis_seed_slew ++;
         if (p.axis_seed > .001) {
-        printf("seed ");
           // axis_seed ranges from 0 to 1.
           if (relaunch || (axis_seed_slew >= 25.*(1. - p.axis_seed))) {
             axis_seed_slew = 0;
@@ -1516,7 +1528,6 @@ int main(int argc, char *argv[])
       p.n_seed = max(0, min(100, p.n_seed));
       while (running && p.n_seed) {
         p.n_seed --;
-        printf("n_seed = %d\n", (int)p.n_seed);
         int seedx = random() % W;
         int seedy = random() % H;
         seed(pixbuf, W, H, seedx, seedy, SEED_VAL, p.seed_r);
