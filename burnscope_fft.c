@@ -842,7 +842,7 @@ int main(int argc, char *argv[])
 "pixel as seed, please send me an email ;)\n"
 "\n"
 "Usage example:\n"
-"  burnscope -g 320x200 -m 2 -p 70\n"
+"  burnscope -g 320x200 -m 2 -f 30\n"
 "\n"
 "Options:\n"
 "\n"
