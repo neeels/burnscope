@@ -1,6 +1,8 @@
 burnscope
 =========
 
+**The Game of Life on Steroids**
+
 Mesmerizing colorful animation from an underdamped blur algorithm.
 
 (c) 2014,2016 Neels Hofmeyr <neels@hofmeyr.de>
@@ -46,5 +48,8 @@ and b. It's not as great as I had expected ;)
 
 Many enhancements come to mind. If you enjoy playing with this, I would be glad
 to hear about it!
+
+I've also implemented this algorithm for the rad1o, in the blurn l0dable.
+(https://github.com/rad1o/f1rmware/pull/115)
 
 Patches welcome!
