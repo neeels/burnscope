@@ -31,6 +31,12 @@ Usage examples:
     ./burnscope\_fft -g 320x200 -m 2 -f 25
     ./burnscope3 -g 320x200 -m 2 -p 70
 
+To find out all features, you'll have to read the source code:
+
+* keyboard shortcuts
+* PNG images dropped into burnscope\_fft
+* ...
+
 burnscope3 uses three independent burnscopes to feed the color channels r, g,
 and b. It's not as great as I had expected ;)
 
