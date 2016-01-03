@@ -21,14 +21,14 @@ With burnscope\_fft, you can *attach a game controller* and influence the
 animation. You can save to raw video file with music playing along (to make a
 music video). See the -h option.
 
-    ./burnscope\_fft -h
+    ./burnscope_fft -h
 
 Usage examples:
 
     sudo apt-get install gcc libsdl1.2-dev libpng12-dev libfftw3-dev libsndfile1-dev
     cd burnscope
     make
-    ./burnscope\_fft -g 320x200 -m 2 -f 25
+    ./burnscope_fft -g 320x200 -m 2 -f 25
     ./burnscope3 -g 320x200 -m 2 -p 70
 
 To find out all features, you'll have to read the source code:
