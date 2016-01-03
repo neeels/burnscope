@@ -7,6 +7,10 @@ Mesmerizing colorful animation from an underdamped blur algorithm.
 
 Published under the GNU General Public License v3.
 
+![screenshot1](http://kleinekatze.de/no4uF3Pa/burnscope_screenshot.png)
+![screenshot2](http://kleinekatze.de/no4uF3Pa/burnscope_screenshot2.png)
+![screenshot3](http://kleinekatze.de/no4uF3Pa/burnscope_screenshot3.png)
+
 Burnscope produces a mesmerizing animation that I discovered by accident when I
 was a teenager. I've recreated it in memories of old times. It repeatedly
 applies a simple underdamped blur algorithm to a seed image, allowing the color
