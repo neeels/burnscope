@@ -96,7 +96,7 @@ void make_apex(double apex_r, double burn_amount, char apex_opt);
 
 void fft_init(void) {
   fftw_init_threads();
-  fftw_plan_with_nthreads(2);
+  fftw_plan_with_nthreads(4);
 
   pixbuf_bytes = W * H * sizeof(pixel_t);
 
