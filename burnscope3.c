@@ -12,19 +12,12 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <time.h>
 
 typedef union {
   Uint8 rgb[3];
   Uint32 v;
 } pixel3_t;
-
-void *cmalloc(int len) {
-  void *p = malloc(len);
-  if (! p) {
-    printf("No mem.");
-    exit(-1);
-  }
-}
 
 #define min(A,B) ((A) > (B)? (B) : (A))
 #define max(A,B) ((A) > (B)? (A) : (B))
