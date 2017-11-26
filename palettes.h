@@ -21,7 +21,7 @@ typedef struct {
   palette_point_t points[];
 } palette_def_t;
 
-palette_def_t pal1 = 
+palette_def_t pal1 =
     {
       11,
       {
@@ -115,7 +115,7 @@ palette_def_t pal3 =
 #undef d
 
 #define d .1
-palette_def_t pal4 = 
+palette_def_t pal4 =
     {
       4,
       {
@@ -141,7 +141,7 @@ palette_def_t pal5 =
 #define d .05
 
 
-palette_def_t pal6 = 
+palette_def_t pal6 =
     {
       6,
       {
@@ -217,7 +217,7 @@ void make_palette(palette_t *palette, int n_colors,
     for (i = 0; i < n_points; i ++)
       points[i].pos /= norm_factor;
   }
-  
+
   // duplicate the last point to "the left", wrap back below zero.
   palette_point_t p = *last_p;
   p.pos -= 1.0;

@@ -142,7 +142,7 @@ void make_apex(double apex_r, double burn_amount, char apex_opt) {
     else
       burn_factor = minuscule;
   }
-  
+
   double apex_sum = 0;
   double apex_r2 = apex_r * apex_r;
   int apex_r_i = apex_r;
@@ -348,13 +348,13 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 #define UNPIXELIZE_BITS 5
 
 void render(SDL_Surface *screen, const int winW, const int winH,
-            palette_t *palette, pixel_t *pixbuf, 
+            palette_t *palette, pixel_t *pixbuf,
             int multiply_pixels, int colorshift, char pixelize,
             unsigned char unpixelize)
-{   
+{
   // Lock surface if needed
-  if (SDL_MUSTLOCK(screen)) 
-    if (SDL_LockSurface(screen) < 0) 
+  if (SDL_MUSTLOCK(screen))
+    if (SDL_LockSurface(screen) < 0)
       return;
 
   assert((W * multiply_pixels) == winW);
@@ -387,7 +387,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     move_pixlz_offset = 0;
     pxlz_dir = (pxlz_dir + 1) % 4;
   }
-  
+
   int _pixelize_offset = move_pixlz_offset * 10;
   pixelize_offset_x = (pixelize_offset_x + _pixelize_offset) & pixelize_mask;
   pixelize_offset_y = (pixelize_offset_y + _pixelize_offset) & pixelize_mask;
@@ -434,7 +434,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
       unsigned int col = (unsigned int)pix + colorshift;
       col %= palette->len;
-      
+
       Uint32 raw = palette->colors[col];
 
       if (unpixelize) {
@@ -476,7 +476,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 #endif
 
   // Unlock if needed
-  if (SDL_MUSTLOCK(screen)) 
+  if (SDL_MUSTLOCK(screen))
     SDL_UnlockSurface(screen);
 
   // Tell SDL to update the whole screen
@@ -690,7 +690,7 @@ void audio_play_callback(void *userdata, Uint8 *stream, int len) {
   static short last_frame[2];
   int frame_size = audio_spec.channels * sizeof(short);
   int want_bytes_played = frames_rendered * audio_bytes_per_video_frame;
-  
+
   // eyes are slower than ears. The sound for the frame should rather come just
   // after the frame is rendered than before.
   want_bytes_played = max(0, want_bytes_played - audio_bytes_per_video_frame);
@@ -756,7 +756,7 @@ int main(int argc, char *argv[])
     c = getopt(argc, argv, "bha:f:g:m:p:r:u:i:o:O:P:");
     if (c == -1)
       break;
-   
+
     switch (c) {
       case 'g':
         {
@@ -1011,19 +1011,19 @@ int main(int argc, char *argv[])
 
   if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_JOYSTICK
                 | (audio_path? SDL_INIT_AUDIO : 0))
-       < 0 ) 
+       < 0 )
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
 
   screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL ) 
+  if ( screen == NULL )
   {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
-  
+
   SDL_WM_SetCaption("burnscope", "burnscope");
   SDL_ShowCursor(SDL_DISABLE);
 
@@ -1050,7 +1050,7 @@ int main(int argc, char *argv[])
     SDL_JoystickEventState(SDL_ENABLE);
 
     joysticks = malloc(sizeof(SDL_Joystick*) * n_joysticks);
-    
+
     int i;
     for (i = 0; i < n_joysticks; i++)
     {
@@ -1132,7 +1132,7 @@ int main(int argc, char *argv[])
       printf(" 16bit WAV");
     }
     printf("\n");
-    
+
     SDL_AudioSpec audio_want_spec;
     audio_want_spec.freq = audio_sndfile_info.samplerate;
     audio_want_spec.format = AUDIO_S16;
@@ -1380,7 +1380,7 @@ int main(int argc, char *argv[])
         && (p.palette_selected < n_palettes))
     {
       palette_t *pal_selected = &palettes[p.palette_selected];
-      if (want_palette != is_palette) 
+      if (want_palette != is_palette)
       {
         if (pal_selected == want_palette)
         {
@@ -1461,11 +1461,11 @@ int main(int argc, char *argv[])
       }
     }
 
-    
+
     if (do_calc) {
       float t = (float)frames_rendered / 100.;
       wavy = sin(wavy_speed*t);
-      
+
       use_burn = p.burn_amount;
 
       if (p.do_wavy) {
@@ -1660,10 +1660,10 @@ int main(int argc, char *argv[])
 
     while (running) {
       SDL_Event event;
-      while (SDL_PollEvent(&event)) 
+      while (SDL_PollEvent(&event))
       {
 
-        switch (event.type) 
+        switch (event.type)
         {
           case SDL_KEYDOWN:
             {
@@ -1986,7 +1986,7 @@ int main(int argc, char *argv[])
                       p.axis_colorshift = -axis_val;
                       do_print = true;
                       break;
-                    
+
                     case 0:
                       // too many separate values in here:
                       p.seed_r = calc_axis_val(1, max(3, seed_r_center), MAX_SEED_R, axis_val);
@@ -2194,7 +2194,7 @@ int main(int argc, char *argv[])
                       if (fabs(ctrl->last_axis_apex_r) >= AXIS_MIN) {
                         ctrl->apex_r_clamp = true;
                       }
-                      
+
                       burn_center = p.burn_amount - burn_jump;
                       if (fabs(ctrl->last_axis_burn) >= AXIS_MIN) {
                         ctrl->burn_clamp = true;

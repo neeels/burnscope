@@ -72,8 +72,8 @@ void rectangle_sum(int add[], pixel3_t *pixbuf, const int W, const int H,
 void surrounding_sum(int add[], pixel3_t *pixbuf, const int W, const int H,
                     const int x, const int y, const int apex_r,
                     bool wrap_borders) {
-  rectangle_sum(add, pixbuf, W, H, 
-                x - apex_r, y - apex_r, 
+  rectangle_sum(add, pixbuf, W, H,
+                x - apex_r, y - apex_r,
                 2 * apex_r + 1,
                 2 * apex_r + 1,
                 wrap_borders);
@@ -101,10 +101,10 @@ void burn(pixel3_t *srcbuf, pixel3_t *destbuf, const int W, const int H,
 void render(SDL_Surface *screen, const int winW, const int winH,
             pixel3_t *pixbuf, const int W, const int H,
             int multiply_pixels)
-{   
+{
   // Lock surface if needed
-  if (SDL_MUSTLOCK(screen)) 
-    if (SDL_LockSurface(screen) < 0) 
+  if (SDL_MUSTLOCK(screen))
+    if (SDL_LockSurface(screen) < 0)
       return;
 
   assert((W * multiply_pixels) == winW);
@@ -143,7 +143,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   }
 
   // Unlock if needed
-  if (SDL_MUSTLOCK(screen)) 
+  if (SDL_MUSTLOCK(screen))
     SDL_UnlockSurface(screen);
 
   // Tell SDL to update the whole screen
@@ -184,7 +184,7 @@ int main(int argc, char *argv[])
     c = getopt(argc, argv, "a:g:m:p:u:Abh");
     if (c == -1)
       break;
-   
+
     switch (c) {
       case 'g':
         {
@@ -325,20 +325,20 @@ int main(int argc, char *argv[])
 
   SDL_Surface *screen;
 
-  if ( SDL_Init(SDL_INIT_VIDEO) < 0 ) 
+  if ( SDL_Init(SDL_INIT_VIDEO) < 0 )
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
   atexit(SDL_Quit);
-    
+
   screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL ) 
+  if ( screen == NULL )
   {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
-  
+
   SDL_WM_SetCaption("burnscope", "burnscope");
 
 
@@ -426,9 +426,9 @@ int main(int argc, char *argv[])
       SDL_Delay(5);
 
     SDL_Event event;
-    while (SDL_PollEvent(&event)) 
+    while (SDL_PollEvent(&event))
     {
-      switch (event.type) 
+      switch (event.type)
       {
       case SDL_KEYDOWN:
         // If escape is pressed, return (and thus, quit)

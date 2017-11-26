@@ -76,7 +76,7 @@ void make_palette(palette_t *palette, int n_colors,
     for (i = 0; i < n_points; i ++)
       points[i].pos /= norm_factor;
   }
-  
+
   // duplicate the last point to "the left", wrap back below zero.
   palette_point_t p = *last_p;
   p.pos -= 1.0;
@@ -137,10 +137,10 @@ void make_palette(palette_t *palette, int n_colors,
 
 void render(SDL_Surface *screen, const int winW, const int winH,
             palette_t *palette, double *pixbuf, const int W, const int H)
-{   
+{
   // Lock surface if needed
-  if (SDL_MUSTLOCK(screen)) 
-    if (SDL_LockSurface(screen) < 0) 
+  if (SDL_MUSTLOCK(screen))
+    if (SDL_LockSurface(screen) < 0)
       return;
 
 
@@ -193,7 +193,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
 
 
   // Unlock if needed
-  if (SDL_MUSTLOCK(screen)) 
+  if (SDL_MUSTLOCK(screen))
     SDL_UnlockSurface(screen);
 
   // Tell SDL to update the whole screen
@@ -306,21 +306,21 @@ int main()
 
   SDL_Surface *screen;
 
-  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 ) 
+  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 )
   {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
-    
+
   int winW = W;
   int winH = H;
   screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL ) 
+  if ( screen == NULL )
   {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
-  
+
   SDL_WM_SetCaption("burnscope", "burnscope");
   SDL_ShowCursor(SDL_DISABLE);
 
@@ -330,7 +330,7 @@ int main()
     { 0., 0, 0, 0 },
     { 1., 1, 1, 1 },
   };
-#else 
+#else
 #define n_palette_points 11
   palette_point_t palette_points[n_palette_points] = {
     { 0./6, 1, 1, 1 },
@@ -396,9 +396,9 @@ int main()
       SDL_Delay(5);
 
     SDL_Event event;
-    while (SDL_PollEvent(&event)) 
+    while (SDL_PollEvent(&event))
     {
-      switch (event.type) 
+      switch (event.type)
       {
         case SDL_KEYDOWN:
           // If escape is pressed, return (and thus, quit)
