@@ -86,10 +86,10 @@ fftw_complex *apex_f;
 fftw_plan plan_apex;
 
 typedef enum {
-  ao_left = 1,
-  ao_right = 2,
+  ao_left = 2,
+  ao_right = 8,
   ao_up = 4,
-  ao_down = 8,
+  ao_down = 1,
 } apex_opt_t;
 
 void make_apex(double apex_r, double burn_amount, char apex_opt);
@@ -290,7 +290,7 @@ void mirror_x(pixel_t *pixbuf, const int W, const int H) {
   int pitch_from = W + x_fold;
 
   for (y = 0; y < H; y ++) {
-    for (x = x_fold; x < W; x ++) {
+    for (x = 0; x < x_fold; x ++) {
       pixel_t v = min(*pos_to, *pos_from);
       *pos_to = v;
       *pos_from = v;
@@ -350,7 +350,7 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 void render(Uint32 *winbuf, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf,
             int multiply_pixels, int colorshift, char pixelize,
-            unsigned char unpixelize)
+            unsigned char invert)
 {
   assert((W * multiply_pixels) == winW);
   assert((H * multiply_pixels) == winH);
@@ -369,12 +369,12 @@ void render(Uint32 *winbuf, const int winW, const int winH,
   int pixelize_offset_x = (pixelize_mask - (W & pixelize_mask)) >> 1;
   int pixelize_offset_y = (pixelize_mask - (H & pixelize_mask)) >> 1;
 
-  int unpixelize_mask = INT_MAX;
-  unpixelize_mask = ~(unpixelize_mask << UNPIXELIZE_BITS);
-  static float unpixelize_offset = 0;
-  unpixelize_offset += .014;
-  int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (winH/2) ) + unpixelize/2));
-  int _unpixelize_offset_y = (int)(((cos(unpixelize_offset) * (winW/2) ) + unpixelize/2));
+  int invert_mask = INT_MAX;
+  invert_mask = ~(invert_mask << UNPIXELIZE_BITS);
+  static float invert_offset = 0;
+  invert_offset += .014;
+  int _invert_offset_x = (int)(((sin(invert_offset) * (winH/2) ) + invert/2));
+  int _invert_offset_y = (int)(((cos(invert_offset) * (winW/2) ) + invert/2));
 
   static float move_pixlz_offset = 0;
   move_pixlz_offset += .1;
@@ -433,9 +433,9 @@ void render(Uint32 *winbuf, const int winW, const int winH,
 
       Uint32 raw = palette->colors[col];
 
-      if (unpixelize) {
-        if ((((x + _unpixelize_offset_x) & unpixelize_mask) <= unpixelize)
-            || (((y + _unpixelize_offset_y) & unpixelize_mask) <= unpixelize))
+      if (invert) {
+        if ((((x + _invert_offset_x) & invert_mask) <= invert)
+            || (((y + _invert_offset_y) & invert_mask) <= invert))
           raw = ~raw;
       }
 
@@ -539,7 +539,6 @@ typedef struct {
   char apex_opt;
   float burn_amount;
   float axis_colorshift;
-  float axis_seed;
   bool do_stop;
   bool do_go;
   bool do_wavy;
@@ -553,29 +552,43 @@ typedef struct {
   float wavy_amp;
   int please_drop_img;
   char pixelize;
-  char unpixelize;
+  char invert;
   int please_drop_img_x;
   int please_drop_img_y;
-  int palette_selected;
-  float palette_blend_speed;
   float seed_intensity;
+  float colorshift_constant;
+  float palette_change;
+  float min_burn;
 } params_t;
 
 const int params_file_id = 0x23315;
 const int params_version = 2;
 
 init_params_t ip;
-params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false,
-  false, false, symm_none, 23, 0, .006, -1, 0, 0, INT_MAX, INT_MAX, -1, 0.5, 0.5};
-
-typedef struct {
-  int selected_layer;
-  float last_axis_apex_r;
-  bool apex_r_clamp;
-  bool clamp_button_held;
-  float last_axis_burn;
-  bool burn_clamp;
-} controller_state_t;
+params_t p = {
+  .apex_r=3.35,
+  .apex_opt = 0,
+  .burn_amount = .0013,
+  .axis_colorshift = 0.1,
+  .do_stop = false,
+  .do_go = false,
+  .do_wavy = true,
+  .do_stutter = false,
+  .do_blank = false,
+  .do_maximize = false,
+  .force_symm = true,
+  .symm = symm_x,
+  .seed_r = 23,
+  .n_seed = 0,
+  .wavy_amp = .002,
+  .please_drop_img = -1,
+  .pixelize = 0,
+  .invert = 0,
+  .please_drop_img_x = INT_MAX,
+  .please_drop_img_y = INT_MAX,
+  .seed_intensity = 1,
+  .colorshift_constant = 2,
+};
 
 int normalize_colorshift = 0;
 
@@ -626,7 +639,7 @@ int render_thread(void *arg) {
       SDL_SemWait(saving_done);
     }
 
-    render(winbuf, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize, p.unpixelize);
+    render(winbuf, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize, p.invert);
 
     SDL_UpdateTexture(texture, NULL, winbuf, winW * sizeof(Uint32));
 
@@ -739,6 +752,7 @@ int main(int argc, char *argv[])
   bool usage = false;
   bool error = false;
   bool cmdline_requests_start_blank = false;
+  bool fullscreen = false;
 
   int c;
 
@@ -1106,8 +1120,7 @@ int main(int argc, char *argv[])
 
   float wavy = 0;
   bool do_print = true;
-  float wavy_speed = 3.;
-  bool seed_key_down = false;
+  float wavy_speed = .5;
   double use_burn = 1.002;
 
   please_render = SDL_CreateSemaphore(0);
@@ -1175,25 +1188,15 @@ int main(int argc, char *argv[])
   }
 
   double apex_r_center = p.apex_r;
-  double seed_r_center = MAX_SEED_R / 2;
   double burn_center = p.burn_amount;
   double burn_jump = 0;
-  bool do_apex_r_tiny = false;
   bool do_back = false;
   bool do_rerecord_params = false;
   bool do_rerecord_params_overlay = false;
   bool do_rerecord_params_overlay_started = false;
-  bool do_alternative_controls = false;
   int had_outparams = 0;
-  int pixelize_clamp = 0;
-  int unpixelize_clamp = 0;
   int img_seeding = -1;
   int img_seeding_slew = 0;
-
-  palette_t *is_palette = &palettes[0];
-  palette_t *want_palette = is_palette;
-  float palette_blend = 0;
-  bool stop_palette_transition = false;
 
   while (running)
   {
@@ -1240,7 +1243,6 @@ int main(int argc, char *argv[])
           check_param(apex_opt);
           check_param(burn_amount);
           check_param(axis_colorshift);
-          check_param(axis_seed);
           check_param(do_stop);
           check_param(do_go);
           check_param(do_wavy);
@@ -1254,12 +1256,12 @@ int main(int argc, char *argv[])
           check_param(wavy_amp);
           check_param(please_drop_img);
           check_param(pixelize);
-          check_param(unpixelize);
+          check_param(invert);
           check_param(please_drop_img_x);
           check_param(please_drop_img_y);
-          check_param(palette_selected);
-          check_param(palette_blend_speed);
           check_param(seed_intensity);
+          check_param(colorshift_constant);
+          check_param(palette_change);
 
           #undef check_param
         }
@@ -1315,7 +1317,6 @@ int main(int argc, char *argv[])
         check_param(apex_opt);
         check_param(burn_amount);
         check_param(axis_colorshift);
-        check_param(axis_seed);
         check_param(do_stop);
         check_param(do_go);
         check_param(do_wavy);
@@ -1329,12 +1330,12 @@ int main(int argc, char *argv[])
         check_param(wavy_amp);
         check_param(please_drop_img);
         check_param(pixelize);
-        check_param(unpixelize);
+        check_param(invert);
         check_param(please_drop_img_x);
         check_param(please_drop_img_y);
-        check_param(palette_selected);
-        check_param(palette_blend_speed);
         check_param(seed_intensity);
+        check_param(colorshift_constant);
+        check_param(palette_change);
 
         #undef check_param
 
@@ -1383,55 +1384,37 @@ int main(int argc, char *argv[])
     colorshift = normalize_colorshift;
 
     {
-      static int colorshift_axis_accum = 0;
-      colorshift_axis_accum += ((float)PALETTE_LEN / 120) * p.axis_colorshift * fabs(p.axis_colorshift);
-      colorshift += colorshift_axis_accum;
+      static float colorshift_accum = 0;
+      colorshift_accum += ((float)PALETTE_LEN / 120) * p.axis_colorshift * fabs(p.axis_colorshift);
+      colorshift_accum += p.colorshift_constant;
+      colorshift += (int)colorshift_accum;
     }
     colorshift %= PALETTE_LEN;
 
-    if ((p.palette_selected >= 0)
-        && (p.palette_selected < n_palettes))
     {
-      palette_t *pal_selected = &palettes[p.palette_selected];
-      if (want_palette != is_palette)
-      {
-        if (pal_selected == want_palette)
-        {
-          stop_palette_transition = ! stop_palette_transition;
-        }
-        else
-        if (pal_selected == is_palette) {
-          stop_palette_transition = false;
-          palette_t *tmp = is_palette;
-          is_palette = want_palette;
-          want_palette = tmp;
-          palette_blend = 1. - palette_blend;
-        }
-        else {
-          memcpy(blended_palette.colors, palette.colors,
-                 PALETTE_LEN * sizeof(Uint32));
-          is_palette = &blended_palette;
-          want_palette = pal_selected;
-          stop_palette_transition = false;
-          palette_blend = 0;
-        }
+      float palette_change_per_frame = (0.002 + p.palette_change) / (want_fps > .1? want_fps : 25);
+      static int left_pal_idx = 0;
+      static int right_pal_idx = 1;
+      static float palette_blend_position = 0;
+
+      palette_blend_position += palette_change_per_frame;
+
+      if (palette_blend_position > 1.) {
+        left_pal_idx = right_pal_idx;
+        right_pal_idx = (left_pal_idx + 1) % n_palettes;
+        palette_blend_position -= 1;
       }
       else
-      {
-        want_palette = pal_selected;
-        stop_palette_transition = false;
+      if (palette_blend_position < 0) {
+        right_pal_idx = left_pal_idx;
+        left_pal_idx = (right_pal_idx > 0? right_pal_idx - 1 : n_palettes - 1);
+        palette_blend_position += 1;
       }
-    }
-    if ((want_palette != is_palette) && ! stop_palette_transition) {
-      float palette_blend_was = palette_blend;
-      palette_blend += p.palette_blend_speed / want_fps;
-      blend_palettes(&palette, is_palette, want_palette, min(1., palette_blend));
-      if (palette_blend >= 1.) {
-        is_palette = want_palette;
-        palette_blend = 0;
-      }
-      if ((palette_blend_was < .5) != (palette_blend < .5))
-        stop_palette_transition = true;
+
+      palette_t *left_pal = &palettes[left_pal_idx % n_palettes];
+      palette_t *right_pal = &palettes[right_pal_idx % n_palettes];
+
+      blend_palettes(&palette, left_pal, right_pal, palette_blend_position);
     }
 
     if (img_seeding >= 0) {
@@ -1443,30 +1426,8 @@ int main(int argc, char *argv[])
         if (_img_seeding >= 10) {
           _img_seeding -= 10;
           if (_img_seeding < n_images) {
-            switch (_img_seeding) {
-#if 0
-              case 0:
-                p.please_drop_img_x = -images[_img_seeding].width;
-                p.please_drop_img_y = -images[_img_seeding].height;
-                break;
-
-              case 1:
-                p.please_drop_img_x = - images[_img_seeding].width/2;
-                p.please_drop_img_y = +5;
-                break;
-
-              case 2:
-                p.please_drop_img_x = 0;
-                p.please_drop_img_y = +5 + images[1].height + 5;
-                break;
-#endif
-
-              default:
-              case 3:
-                p.please_drop_img_x = -images[_img_seeding].width / 2;
-                p.please_drop_img_y = -images[_img_seeding].height / 2;
-                break;
-            }
+            p.please_drop_img_x = -images[_img_seeding].width / 2;
+            p.please_drop_img_y = -images[_img_seeding].height / 2;
           }
         }
         p.please_drop_img = _img_seeding;
@@ -1487,35 +1448,6 @@ int main(int argc, char *argv[])
 
       if ((p.burn_amount > 0) && (p.apex_r > 10))
         use_burn += (p.apex_r - 10) * .0000625;
-
-
-
-      if (seed_key_down) {
-        static int key_seed_slew = 0;
-        if ((++ key_seed_slew) > 1) {
-          key_seed_slew = 0;
-          p.n_seed ++;
-        }
-      }
-
-      {
-        static unsigned int axis_seed_slew = 0;
-        static bool relaunch = false;
-        axis_seed_slew ++;
-        if (p.axis_seed > .001) {
-          // axis_seed ranges from 0 to 1.
-          if (relaunch || (axis_seed_slew >= 25.*(1. - p.axis_seed))) {
-            axis_seed_slew = 0;
-            relaunch = false;
-            p.n_seed ++;
-          }
-        }
-        else
-          // want to start immediately after axis was released.
-          relaunch = true;
-      }
-
-      // short interruption of if(do_calc) to save parameters frame.
     }
 
     if (out_params) {
@@ -1531,9 +1463,6 @@ int main(int argc, char *argv[])
       }
       if (p.do_maximize) {
         p.do_maximize = false;
-      }
-      if (p.palette_selected >= 0) {
-        p.palette_selected = -1;
       }
     }
 
@@ -1579,7 +1508,7 @@ int main(int argc, char *argv[])
 #endif
 
           seed_image(p.please_drop_img_x, p.please_drop_img_y, img->data, img->width, img->height,
-                     intensity);
+                     1.);
         }
         p.please_drop_img = -1;
         p.please_drop_img_x = INT_MAX;
@@ -1636,13 +1565,10 @@ int main(int argc, char *argv[])
         was_burn = use_burn;
         was_apex_opt = p.apex_opt;
 
-        if ((p.apex_opt & (ao_left | ao_right)) && (p.apex_opt & (ao_up | ao_down)))
-          p.symm = symm_none;
+        if (p.symm != symm_none)
+          p.force_symm = true;
       }
-
     }
-
-    static float axis_un_pixelize = 0;
 
     static char printcount = 0;
     if (printcount++ >= 10) {
@@ -1652,14 +1578,6 @@ int main(int argc, char *argv[])
       if (do_print) {
         do_print = false;
         printcount = 0;
-        int i;
-        for (i = 0; i < n_joysticks; i++) {
-          controller_state_t *ctrl = &controller[i];
-          if (ctrl->burn_clamp)
-            printf("B%d\n", i);
-          if (ctrl->apex_r_clamp)
-            printf("A%d\n", i);
-        }
         printf("%.1ffps apex_r=%f_opt%d burn=%f(%f) audio_sync=%d\n",
                1000./(avg_frame_period>>AVG_SHIFTING),
                p.apex_r,p.apex_opt,
@@ -1703,7 +1621,6 @@ int main(int argc, char *argv[])
 
                 case ' ':
                   p.n_seed ++;
-                  seed_key_down = true;
                   break;
 
                 case 8: // del
@@ -1712,6 +1629,7 @@ int main(int argc, char *argv[])
 
                 case 'm':
                   p.symm = (p.symm + 1) % SYMMETRY_KINDS;
+                  p.force_symm = true;
                   break;
 
                 case '\\':
@@ -1800,10 +1718,6 @@ int main(int argc, char *argv[])
                   wavy_speed -= .5;
                   break;
 
-                case 13:
-                  SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
-                  break;
-
                 case 'y':
                   img_seeding = 14;
                   break;
@@ -1832,30 +1746,6 @@ int main(int argc, char *argv[])
                   p.axis_colorshift -= 0.1;
                   break;
 
-                case 'z':
-                  p.palette_selected = 0;
-                  break;
-
-                case 'x':
-                  p.palette_selected = 1;
-                  break;
-
-                case 'c':
-                  p.palette_selected = 2;
-                  break;
-
-                case 'v':
-                  p.palette_selected = 3;
-                  break;
-
-                case 'b':
-                  p.palette_selected = 4;
-                  break;
-
-                case 'n':
-                  p.palette_selected = 5;
-                  break;
-
                 default:
 
                   if ((c >= '1') && (c <= '9')) {
@@ -1878,9 +1768,6 @@ int main(int argc, char *argv[])
 
               int img_seeding_off = -2;
               switch (c) {
-                case ' ':
-                  seed_key_down = false;
-
                 case 'u':
                   img_seeding_off = 10;
                   break;
@@ -1899,6 +1786,14 @@ int main(int argc, char *argv[])
 
                 case 'y':
                   img_seeding_off = 14;
+                  break;
+
+                case 13:
+                  fullscreen = !fullscreen;
+                  if (fullscreen)
+                    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
+                  else
+                    SDL_SetWindowFullscreen(window, 0);
                   break;
 
                 default:
@@ -1921,7 +1816,7 @@ int main(int argc, char *argv[])
             break;
 
 
-#define DO_JOY_DEBUG 1
+#define DO_JOY_DEBUG 0
 
 #if DO_JOY_DEBUG
 #define JOYMSG(fmt, args...) printf(fmt, ##args )
@@ -1933,47 +1828,7 @@ int main(int argc, char *argv[])
             {
               float axis_val = event.jaxis.value;
               axis_val /= 32768;
-              controller_state_t *ctrl = &controller[event.jaxis.which];
-              JOYMSG("%d axis %d val %f\n", event.jaxis.which, event.jaxis.axis, axis_val);
-
-              // these axes select the joystick layers
-              int l = ctrl->selected_layer;
-              switch(event.jaxis.axis)
-              {
-                case 6:
-                  if (axis_val < -.2) {
-                    l = 2;
-                  }
-                  else
-                  if (axis_val > .2) {
-                    l = 3;
-                  }
-                  break;
-
-                case 7:
-                  if (axis_val < -.2) {
-                    l = 1;
-                  }
-                  else
-                  if (axis_val > .2) {
-                    l = 0;
-                  }
-                  break;
-
-                default:
-                  break;
-              }
-
-              if (l != ctrl->selected_layer) {
-                // layer changed
-                ctrl->selected_layer = l;
-                printf("LAYER %d %f\n", ctrl->selected_layer, axis_val);
-              }
-
-              switch (l)
-              {
-
-                case 0: // layer
+              // JOYMSG("%d axis %d val %f\n", event.jaxis.which, event.jaxis.axis, axis_val);
 
 #define calc_axis_val(start, center, end, axis_val) \
                   ((axis_val <= 0)? \
@@ -1985,40 +1840,28 @@ int main(int argc, char *argv[])
                   switch(event.jaxis.axis)
                   {
                     case 3:
-                      if ((! ctrl->clamp_button_held) && ctrl->apex_r_clamp && (fabs(axis_val) < AXIS_MIN))
-                        ctrl->apex_r_clamp = false;
-
-                      if (! (ctrl->apex_r_clamp)) {
-                        if (do_apex_r_tiny) {
-                          p.apex_r = calc_axis_val(1.0002, 1.000275, 1.04, axis_val);
-                        }
-                        else {
-                          double apex_r_min = max(1.03, apex_r_center * 0.1);
-                          double apex_r_max = min(min_W_H/6, apex_r_center * 2);
-                          p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
-                        }
-                        do_print = true;
-                      }
-                      ctrl->last_axis_apex_r = axis_val;
-                      break;
-
-                    case 4:
                       p.axis_colorshift = -axis_val;
-                      do_print = true;
                       break;
 
                     case 0:
-                      // too many separate values in here:
-                      p.seed_r = calc_axis_val(1, max(3, seed_r_center), MAX_SEED_R, axis_val);
-                      axis_un_pixelize = axis_val;
-                      p.seed_intensity = axis_val;
-                      do_print = true;
+                      p.palette_change = (fabs(axis_val) > .1)? axis_val : 0;
+                      break;
+
+
+                    case 4:
+                      {
+                        double apex_r_min = max(2.03, apex_r_center * 0.1);
+                        double apex_r_max = min(min_W_H/6, apex_r_center * 5);
+                        p.apex_r = calc_axis_val(apex_r_min, apex_r_center, apex_r_max, axis_val);
+                        if (axis_val < -.5) {
+                          JOYMSG("val %f -> maximize\n", axis_val);
+                          p.do_maximize = true;
+                        }
+                      }
                       break;
 
                     case 1:
-                      if ((! ctrl->clamp_button_held) && ctrl->burn_clamp && (fabs(axis_val) < AXIS_MIN))
-                        ctrl->burn_clamp = false;
-                      if (! ctrl->burn_clamp) {
+                      {
                         const double bmin = -.007;
                         const double bmax = .025;
                         double _burn_center = burn_center + burn_jump;
@@ -2027,290 +1870,105 @@ int main(int argc, char *argv[])
                         axis_val *= axis_val * axis_val;
                         p.burn_amount = calc_axis_val(burn_min, _burn_center, burn_max, (-axis_val));
                         do_print = true;
+                        if (axis_val < -.5) {
+                          JOYMSG("val %f -> maximize\n", axis_val);
+                          p.do_maximize = true;
+                        }
                       }
-                      ctrl->last_axis_burn = axis_val;
                       break;
 
 
-#define DO_SEED \
-                          p.axis_seed = (axis_val + .5) / 1.5; \
-                          if (p.axis_seed < 0) \
-                            p.axis_seed = 0; \
-                          p.axis_seed *= p.axis_seed;
-
-#define DO_UNPIXELIZE \
-                        p.unpixelize = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) ); \
-                        if (ctrl->clamp_button_held || (p.unpixelize < unpixelize_clamp)) { \
-                          p.unpixelize = unpixelize_clamp; \
-                        } \
-                        else { \
-                          unpixelize_clamp = 0; \
-                        }
-
                     case 5:
-                      if (do_alternative_controls) {
-                        DO_UNPIXELIZE
-                      }
-                      else {
-                        DO_SEED
-                      }
+                      p.invert = ((axis_val + 1) / 2) * ((1 << UNPIXELIZE_BITS) ); \
                       break;
 
                     case 2:
-                      if (axis_un_pixelize < -.2) {
-                        if (do_alternative_controls) {
-                          DO_SEED
-                        }
-                        else {
-                          DO_UNPIXELIZE
-                        }
-                      }
-                      else {
-                        p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
-                        if (ctrl->clamp_button_held || (p.pixelize < pixelize_clamp)) {
-                          p.pixelize = pixelize_clamp;
-                        }
-                        else
-                          pixelize_clamp = 0;
-                      }
+                      p.pixelize = ((axis_val + 1) / 2) * (min_W_H > 500? 9 : 6);
                       break;
-
-
 
                     default:
                       printf("axis %d = %.3f\n", event.jaxis.axis, axis_val);
                       break;
                   }
 
-                  break; // layer 0
-
-                case 1: // layer
-                  switch(event.jaxis.axis)
-                  {
-                    case 0:
-                      if (axis_val < -.1) {
-                        p.apex_opt = (p.apex_opt & ~(ao_right)) | ao_left;
-                        p.do_maximize = true;
-                      }
-                      else
-                      if (axis_val > .1) {
-                        p.apex_opt = (p.apex_opt & ~(ao_left)) | ao_right;
-                        p.do_maximize = true;
-                      }
-                      else
-                        p.apex_opt = (p.apex_opt & ~(ao_left | ao_right));
-                      break;
-
-                    case 1:
-                      if (axis_val < -.1) {
-                        p.apex_opt = (p.apex_opt & ~(ao_down)) | ao_up;
-                        p.do_maximize = true;
-                      }
-                      else
-                      if (axis_val > .1) {
-                        p.apex_opt = (p.apex_opt & ~(ao_up)) | ao_down;
-                        p.do_maximize = true;
-                      }
-                      else
-                        p.apex_opt = (p.apex_opt & ~(ao_up | ao_down));
-                      break;
-
-
-                  }
-                  break; // layer 1
-
-                case 2: // layer
-                  switch(event.jaxis.axis)
-                  {
-                    case 2:
-                      p.palette_blend_speed = .1 + (axis_val + 1)/2;
-                      break;
-                  }
-                  break; // layer 2
-
-              } // switch layers in SDL_JOYAXISMOTION
-            }
+              }
             break; // SDL_JOYAXISMOTION
 
           case SDL_JOYBUTTONDOWN:
-            {
-              controller_state_t *ctrl = &controller[event.jbutton.which];
-              int l = ctrl->selected_layer;
               JOYMSG("%d button %d down\n", event.jbutton.which, event.jbutton.button);
-              switch (l) {
+              {
 
-                case 0: // layer
+                switch (event.jbutton.button) {
+                case 3:
+                case 0:
+                  p.symm = (p.symm + 1) % SYMMETRY_KINDS;
+                  p.force_symm = true;
+                  p.n_seed = 1;
+                  JOYMSG("symmetry: %s\n", symmetry_name[p.symm % SYMMETRY_KINDS]);
+                  break;
 
-                  switch (event.jbutton.button) {
-                    case 0:
-                      if (! do_alternative_controls) {
-                        // preset
-                        p.apex_r = apex_r_center = 12.5;
-                        burn_jump = 0;
-                        p.burn_amount = burn_center;
-                        p.do_maximize = true;
-                        do_apex_r_tiny = false;
-                        ctrl->burn_clamp = ctrl->apex_r_clamp = false;
-                      }
-                      else
-                        p.do_stop = true;
-                      break;
-
-                    case 1:
-                      if (! do_alternative_controls) {
-                        // preset
-                        p.apex_r = apex_r_center = 20. + 7. * frandom();
-                        burn_jump = 0;
-                        p.burn_amount = burn_center + burn_jump;
-                        p.do_maximize = true;
-                        do_apex_r_tiny = false;
-                        ctrl->burn_clamp = ctrl->apex_r_clamp = false;
-                      }
-                      else {
-                        p.symm = symm_point;
-                        p.force_symm = true;
-                      }
-                      break;
-
-                    case 2:
-                      if (! do_alternative_controls) {
-                        // preset
-                        p.apex_r = apex_r_center = 2.135 + 0.5*frandom();
-                        burn_jump = 0;
-                        p.burn_amount = burn_center + burn_jump;
-                        p.do_maximize = true;
-                        do_apex_r_tiny = false;
-                        ctrl->burn_clamp = ctrl->apex_r_clamp = false;
-                      }
-                      else {
-                        p.symm = symm_x;
-                        p.force_symm = true;
-                      }
-                      break;
-
-                    case 3:
-                      if (! do_alternative_controls) {
-                        // preset
-                        p.apex_r = apex_r_center = 20. + 7. * frandom();
-                        burn_jump = -.0005 - burn_center;
-                        p.burn_amount = burn_center + burn_jump;
-                        p.seed_r = seed_r_center = MAX_SEED_R / 2;
-                        do_apex_r_tiny = false;
-                        ctrl->burn_clamp = ctrl->apex_r_clamp = false;
-                      }
-                      else {
-                        p.do_blank = true;
-                      }
-                      break;
-
-                    case 4:
-                      p.do_maximize = true;
-                      break;
-
-                    case 5:
-                      ctrl->clamp_button_held = true;
-
-                      apex_r_center = p.apex_r;
-                      if (fabs(ctrl->last_axis_apex_r) >= AXIS_MIN) {
-                        ctrl->apex_r_clamp = true;
-                      }
-
-                      burn_center = p.burn_amount - burn_jump;
-                      if (fabs(ctrl->last_axis_burn) >= AXIS_MIN) {
-                        ctrl->burn_clamp = true;
-                      }
-
-                      seed_r_center = p.seed_r;
-
-                      pixelize_clamp = p.pixelize;
-                      unpixelize_clamp = p.unpixelize;
-                      break;
-
-                    case 10:
-                      do_apex_r_tiny = ! do_apex_r_tiny;
-                      if (do_apex_r_tiny) {
-                        p.apex_r = 1.000275;
-                        burn_jump = 0;
-                        p.burn_amount = burn_center;
-                      }
-                      break;
-
-                    case 6:
-                      do_back = true;
-                      do_rerecord_params = false;
-                      break;
-
-                    case 7:
-                      do_rerecord_params = ! do_rerecord_params;
-                      do_rerecord_params_overlay = do_rerecord_params;
-                      do_rerecord_params_overlay_started = do_rerecord_params_overlay;
-                      break;
-
-                    case 8:
-                      do_rerecord_params = ! do_rerecord_params;
-                      do_rerecord_params_overlay = false;
-                      break;
-
-                    case 9:
-                      do_alternative_controls = ! do_alternative_controls;
-                      break;
-
-                    default:
-                      printf("%2d: button %d = %s\n",
-                             event.jbutton.which, event.jbutton.button,
-                             event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
-                      break;
+                case 1:
+                  {
+                    static int next_image = -1;
+                    next_image = (next_image + 1) % n_images;
+                    p.please_drop_img = next_image;
+                    p.symm = symm_none;
                   }
-                  break; // layer 0
+                  break;
 
+                case 2:
+                  p.n_seed = 1;
+                  break;
 
-                case 2: // layer
-                  p.palette_selected = event.jbutton.button;
-                  printf("palette %d\n", p.palette_selected);
-                  break; // layer 2
+                case 4:
+                  p.do_maximize = true;
+                  break;
 
-              } // switch layer
+                case 5:
+                  p.do_blank = true;
+                  break;
+
+                case 6:
+                  do_back = true;
+                  do_rerecord_params = false;
+                  break;
+
+                case 7:
+                  do_rerecord_params = ! do_rerecord_params;
+                  do_rerecord_params_overlay = do_rerecord_params;
+                  do_rerecord_params_overlay_started = do_rerecord_params_overlay;
+                  break;
+
+                case 8:
+                  do_rerecord_params = ! do_rerecord_params;
+                  do_rerecord_params_overlay = false;
+                  break;
+
+                default:
+                  printf("%2d: button %d = %s\n",
+                         event.jbutton.which, event.jbutton.button,
+                         event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
+                  break;
+                }
             }
             break;
 
 
           case SDL_JOYBUTTONUP:
             {
-              controller_state_t *ctrl = &controller[event.jbutton.which];
-              int l = ctrl->selected_layer;
-              switch (l) {
+              switch (event.jbutton.button) {
 
-                case 0: // layer
-                    switch (event.jbutton.button) {
-
-                      case 5:
-                        ctrl->clamp_button_held = false;
-                        break;
-
-                      case 6:
-                        do_back = false;
-                        break;
-
-
-                      case 0:
-                        p.do_go = true;
-                        break;
-
-
-                      default:
-                        printf("%2d: button %d = %s\n",
-                               event.jbutton.which, event.jbutton.button,
-                               event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
-                        break;
-                    }
-                    break; // layer 0
-              } // switch layers in SDL_JOYBUTTONUP
+              default:
+                printf("%2d: button %d = %s\n",
+                       event.jbutton.which, event.jbutton.button,
+                       event.jbutton.state == SDL_PRESSED ? "pressed" : "released");
+                break;
+              }
             }
             break;
 
           case SDL_JOYHATMOTION:  /* Handle Hat Motion */
-            printf("%2d: hat %d = %d\n",
-                   event.jhat.which, event.jhat.hat, event.jhat.value);
+            p.apex_opt = event.jhat.value;
             break;
 
           case SDL_JOYBALLMOTION:  /* Handle Joyball Motion */
@@ -2434,3 +2092,5 @@ int main(int argc, char *argv[])
   SDL_Quit();
   return 0;
 }
+
+/* vim: ts=2 sw=2 et
