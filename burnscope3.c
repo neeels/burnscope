@@ -7,7 +7,7 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -98,23 +98,17 @@ void burn(pixel3_t *srcbuf, pixel3_t *destbuf, const int W, const int H,
 }
 
 
-void render(SDL_Surface *screen, const int winW, const int winH,
+void render(pixel3_t *winbuf, const int winW, const int winH,
             pixel3_t *pixbuf, const int W, const int H,
-            int multiply_pixels)
+            int multiply_pixels, SDL_PixelFormat *format)
 {
-  // Lock surface if needed
-  if (SDL_MUSTLOCK(screen))
-    if (SDL_LockSurface(screen) < 0)
-      return;
-
   assert((W * multiply_pixels) == winW);
   assert((H * multiply_pixels) == winH);
 
   int x, y;
   int mx, my;
-  int pitch = screen->pitch / sizeof(Uint32) - winW;
 
-  Uint32 *screenpos = (Uint32*)(screen->pixels);
+  Uint32 *winpos = (Uint32*)(winbuf);
   pixel3_t *pixbufpos = pixbuf;
   for (y = 0; y < H; y++) {
     pixel3_t *pixbuf_y_pos = pixbufpos;
@@ -128,26 +122,18 @@ void render(SDL_Surface *screen, const int winW, const int winH,
             p.rgb[i] = 0x7f - (p.rgb[i] & 0x7f);
           p.rgb[i] <<= 1;
         }
-        Uint32 val = SDL_MapRGB(screen->format,
+        Uint32 val = SDL_MapRGB(format,
                        p.rgb[0],
                        p.rgb[1],
                        p.rgb[2]);
         for (mx = 0; mx < multiply_pixels; mx++) {
-          *screenpos = val;
-          screenpos ++;
+          *winpos = val;
+          winpos ++;
         }
         pixbufpos ++;
       }
-      screenpos += pitch;
     }
   }
-
-  // Unlock if needed
-  if (SDL_MUSTLOCK(screen))
-    SDL_UnlockSurface(screen);
-
-  // Tell SDL to update the whole screen
-  SDL_UpdateRect(screen, 0, 0, winW, winH);
 }
 
 void seed(pixel3_t *pixbuf, const int W, const int H, int x, int y,
@@ -323,27 +309,38 @@ int main(int argc, char *argv[])
   }
 
 
-  SDL_Surface *screen;
-
-  if ( SDL_Init(SDL_INIT_VIDEO) < 0 )
-  {
+  if (SDL_Init(SDL_INIT_VIDEO) < 0) {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
-  atexit(SDL_Quit);
 
-  screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL )
-  {
+  SDL_Window *window;
+  window = SDL_CreateWindow("burnscope3", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                            winW, winH, 0);
+
+  if (!window) {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
 
-  SDL_WM_SetCaption("burnscope", "burnscope");
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
+  if (!renderer) {
+    fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
+    exit(1);
+  }
 
+  SDL_ShowCursor(SDL_DISABLE);
+  SDL_PixelFormat *pixelformat = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+  SDL_Texture *texture = SDL_CreateTexture(renderer, pixelformat->format,
+                                           SDL_TEXTUREACCESS_STREAMING, winW, winH);
+  if (!texture) {
+    fprintf(stderr, "Cannot create texture\n");
+    exit(1);
+  }
 
   pixel3_t *buf1 = malloc(W * H * sizeof(pixel3_t));
   pixel3_t *buf2 = malloc(W * H * sizeof(pixel3_t));
+  pixel3_t *winbuf = malloc(winW * winH * sizeof(Uint32));
   bzero(buf1, W*H*sizeof(pixel3_t));
   bzero(buf2, W*H*sizeof(pixel3_t));
 
@@ -420,7 +417,13 @@ int main(int argc, char *argv[])
           pixbuf[i + W * y] = i;
       }
 #endif
-      render(screen, winW, winH, pixbuf, W, H, multiply_pixels);
+      render(winbuf, winW, winH, pixbuf, W, H, multiply_pixels, pixelformat);
+
+      SDL_UpdateTexture(texture, NULL, winbuf, winW * sizeof(Uint32));
+
+      SDL_RenderClear(renderer);
+      SDL_RenderCopy(renderer, texture, NULL, NULL);
+      SDL_RenderPresent(renderer);
     }
     else
       SDL_Delay(5);

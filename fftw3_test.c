@@ -5,7 +5,7 @@
 
 #include <fftw3.h>
 #include <math.h>
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 
 #define PALETTE_LEN_BITS 12
 #define PALETTE_LEN (1 << PALETTE_LEN_BITS)
@@ -13,6 +13,7 @@
 typedef struct {
   Uint32 *colors;
   unsigned int len;
+  SDL_PixelFormat *format;
 } palette_t;
 
 typedef struct {
@@ -32,11 +33,10 @@ static void *malloc_check(size_t len) {
   return p;
 }
 
-void set_color(palette_t *palette, int i, float r, float g, float b,
-               SDL_PixelFormat *format) {
+void set_color(palette_t *palette, int i, float r, float g, float b) {
   if (i >= palette->len)
     return;
-  palette->colors[i] = SDL_MapRGB(format, r * 255, g * 255, b * 255);
+  palette->colors[i] = SDL_MapRGB(palette->format, r * 255, g * 255, b * 255);
 }
 
 /* Generates a color palette, setting palette->colors and palette->len.
@@ -52,12 +52,13 @@ void make_palette(palette_t *palette, int n_colors,
 
   palette->colors = malloc_check(n_colors * sizeof(Uint32));
   palette->len = n_colors;
+  palette->format = format;
 
 
   if (n_points < 1) {
     for (i = 0; i < palette->len; i++) {
       float val = (float)i / palette->len;
-      set_color(palette, i, val, val, val, format);
+      set_color(palette, i, val, val, val);
     }
     return;
   }
@@ -128,24 +129,18 @@ void make_palette(palette_t *palette, int n_colors,
       float g = rfade * p.g  +  fade * next_p->g;
       float b = rfade * p.b  +  fade * next_p->b;
 
-      set_color(palette, color_pos, r, g, b, format);
+      set_color(palette, color_pos, r, g, b);
     }
 
     p = *next_p;
   }
 }
 
-void render(SDL_Surface *screen, const int winW, const int winH,
+void render(Uint32 *winbuf, const int winW, const int winH,
             palette_t *palette, double *pixbuf, const int W, const int H)
 {
-  // Lock surface if needed
-  if (SDL_MUSTLOCK(screen))
-    if (SDL_LockSurface(screen) < 0)
-      return;
-
 
   int x, y;
-  int pitch = screen->pitch / sizeof(Uint32) - winW;
 #if 0
   double max = 1e-5;
   double min = 0;
@@ -160,7 +155,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   printf("%f .. %f\n", min, max);
 #endif
 
-  Uint32 *screenpos = (Uint32*)(screen->pixels);
+  Uint32 *winpos = winbuf;
   double *pixbufpos;
   for (y = 0; y < H; y++) {
     pixbufpos = pixbuf + y;
@@ -171,11 +166,10 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         *pixbufpos = 0;
       }
       Uint32 raw = palette->colors[(int)col];
-      *screenpos = raw;
-      screenpos ++;
+      *winpos = raw;
+      winpos ++;
       pixbufpos += H;
     }
-    screenpos += pitch;
   }
 
 #if 0
@@ -191,13 +185,6 @@ void render(SDL_Surface *screen, const int winW, const int winH,
   }
 #endif
 
-
-  // Unlock if needed
-  if (SDL_MUSTLOCK(screen))
-    SDL_UnlockSurface(screen);
-
-  // Tell SDL to update the whole screen
-  SDL_UpdateRect(screen, 0, 0, winW, winH);
 }
 
 int main()
@@ -302,27 +289,32 @@ int main()
   plan_forward = fftw_plan_dft_r2c_2d(W, H, in, out, FFTW_ESTIMATE);
   plan_backward = fftw_plan_dft_c2r_2d(W, H, out, in, FFTW_ESTIMATE);
 
-
-
-  SDL_Surface *screen;
-
-  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 )
-  {
-    fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
-    exit(1);
-  }
-
   int winW = W;
   int winH = H;
-  screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL )
-  {
+
+  SDL_Window *window;
+  window = SDL_CreateWindow("fftw3_test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                            winW, winH, 0);
+
+  if (!window) {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
 
-  SDL_WM_SetCaption("burnscope", "burnscope");
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
+  if (!renderer) {
+    fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
+    exit(1);
+  }
+
   SDL_ShowCursor(SDL_DISABLE);
+  SDL_PixelFormat *pixelformat = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+  SDL_Texture *texture = SDL_CreateTexture(renderer, pixelformat->format,
+                                           SDL_TEXTUREACCESS_STREAMING, winW, winH);
+  if (!texture) {
+    fprintf(stderr, "Cannot create texture\n");
+    exit(1);
+  }
 
 #if 0
 #define n_palette_points 2
@@ -350,11 +342,13 @@ int main()
   palette_t palette;
   make_palette(&palette, PALETTE_LEN,
                palette_points, n_palette_points,
-               screen->format);
+               pixelformat);
 
   bool running = true;
   int frame_period = 50;
   int last_ticks = SDL_GetTicks() - frame_period;
+
+  Uint32 *winbuf = (Uint32*)malloc_check(winW * winH * sizeof(Uint32));
 
   while (running)
   {
@@ -367,7 +361,12 @@ int main()
     }
 
     if (do_render) {
-      render(screen, winW, winH, &palette, in, W, H);
+      render(winbuf, winW, winH, &palette, in, W, H);
+      SDL_UpdateTexture(texture, NULL, winbuf, winW * sizeof(Uint32));
+      SDL_RenderClear(renderer);
+      SDL_RenderCopy(renderer, texture, NULL, NULL);
+      SDL_RenderPresent(renderer);
+
       fftw_execute(plan_forward);
 
 #if 1

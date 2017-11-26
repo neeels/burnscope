@@ -9,8 +9,8 @@
 #include <math.h>
 #include <time.h>
 #include <stdlib.h>
-#include <SDL/SDL.h>
-#include <SDL/SDL_thread.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_thread.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -347,34 +347,30 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 
 #define UNPIXELIZE_BITS 5
 
-void render(SDL_Surface *screen, const int winW, const int winH,
+void render(Uint32 *winbuf, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf,
             int multiply_pixels, int colorshift, char pixelize,
             unsigned char unpixelize)
 {
-  // Lock surface if needed
-  if (SDL_MUSTLOCK(screen))
-    if (SDL_LockSurface(screen) < 0)
-      return;
-
   assert((W * multiply_pixels) == winW);
   assert((H * multiply_pixels) == winH);
 
   int x, y;
   int mx, my;
-  int pitch = screen->pitch / sizeof(Uint32);
+  int pitch = winW;
   int one_screen_row_pitch = pitch - multiply_pixels;
   int one_multiplied_row_pitch = (pitch - winW)
                                  + (multiply_pixels - 1)*pitch;
 
-  Uint32 *screenpos = (Uint32*)(screen->pixels);
+  Uint32 *winpos = winbuf;
   pixel_t *pixbufpos = pixbuf;
 
   int pixelize_mask = ~(INT_MAX << pixelize);
   int pixelize_offset_x = (pixelize_mask - (W & pixelize_mask)) >> 1;
   int pixelize_offset_y = (pixelize_mask - (H & pixelize_mask)) >> 1;
 
-  int unpixelize_mask = ~(INT_MAX << UNPIXELIZE_BITS);
+  int unpixelize_mask = INT_MAX;
+  unpixelize_mask = ~(unpixelize_mask << UNPIXELIZE_BITS);
   static float unpixelize_offset = 0;
   unpixelize_offset += .014;
   int _unpixelize_offset_x = (int)(((sin(unpixelize_offset) * (winH/2) ) + unpixelize/2));
@@ -443,7 +439,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
           raw = ~raw;
       }
 
-      Uint32 *p = screenpos;
+      Uint32 *p = winpos;
 
       for (my = 0; my < multiply_pixels; my++) {
         for (mx = 0; mx < multiply_pixels; mx++) {
@@ -453,9 +449,9 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         p += one_screen_row_pitch;
       }
 
-      screenpos += multiply_pixels;
+      winpos += multiply_pixels;
     }
-    screenpos += one_multiplied_row_pitch;
+    winpos += one_multiplied_row_pitch;
   }
 
 #if AVERAGING
@@ -474,13 +470,6 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     }
   }
 #endif
-
-  // Unlock if needed
-  if (SDL_MUSTLOCK(screen))
-    SDL_UnlockSurface(screen);
-
-  // Tell SDL to update the whole screen
-  SDL_UpdateRect(screen, 0, 0, winW, winH);
 }
 
 void seed1(pixel_t *pixbuf, const int W, const int H, int x, int y,
@@ -525,7 +514,9 @@ volatile int avg_frame_period = 0;
 #define AVG_SHIFTING 3
 float want_fps = 25;
 
-SDL_Surface *screen;
+Uint32 *winbuf;
+SDL_Renderer *renderer;
+SDL_Texture *texture;
 int winW;
 int winH;
 palette_t palette;
@@ -635,7 +626,13 @@ int render_thread(void *arg) {
       SDL_SemWait(saving_done);
     }
 
-    render(screen, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize, p.unpixelize);
+    render(winbuf, winW, winH, &palette, pixbuf, multiply_pixels, colorshift, p.pixelize, p.unpixelize);
+
+    SDL_UpdateTexture(texture, NULL, winbuf, winW * sizeof(Uint32));
+
+    SDL_RenderClear(renderer);
+    SDL_RenderCopy(renderer, texture, NULL, NULL);
+    SDL_RenderPresent(renderer);
 
     int t = SDL_GetTicks();
 
@@ -667,7 +664,7 @@ int save_thread(void *arg) {
       break;
 
     if (out_stream) {
-      fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
+      fwrite(winbuf, sizeof(Uint32), winW * winH, out_stream);
     }
     SDL_SemPost(saving_done);
   }
@@ -1017,15 +1014,29 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL )
-  {
+  SDL_Window *window;
+  window = SDL_CreateWindow("burnscope_fft", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                            winW, winH, 0);
+
+  if (!window) {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
 
-  SDL_WM_SetCaption("burnscope", "burnscope");
+  renderer = SDL_CreateRenderer(window, -1, 0);
+  if (!renderer) {
+    fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
+    exit(1);
+  }
+
   SDL_ShowCursor(SDL_DISABLE);
+  SDL_PixelFormat *pixelformat = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+  texture = SDL_CreateTexture(renderer, pixelformat->format,
+                              SDL_TEXTUREACCESS_STREAMING, winW, winH);
+  if (!texture) {
+    fprintf(stderr, "Cannot create texture\n");
+    exit(1);
+  }
 
   const int n_joysticks = SDL_NumJoysticks();
 
@@ -1054,7 +1065,7 @@ int main(int argc, char *argv[])
     int i;
     for (i = 0; i < n_joysticks; i++)
     {
-      printf("%2d: '%s'\n", i, SDL_JoystickName(i));
+      printf("%2d: '%s'\n", i, SDL_JoystickNameForIndex(i));
 
       SDL_Joystick *j = SDL_JoystickOpen(i);
       printf("    %d buttons  %d axes  %d balls %d hats\n",
@@ -1067,16 +1078,18 @@ int main(int argc, char *argv[])
     }
   }
 
-  make_palettes(screen->format);
+  make_palettes(pixelformat);
   make_palette(&palette, PALETTE_LEN,
                palette_defs[0],
-               screen->format);
+               pixelformat);
 
   make_palette(&blended_palette, PALETTE_LEN,
                palette_defs[0],
-               screen->format);
+               pixelformat);
 
   fft_init();
+
+  winbuf = malloc_check(winW * winH * sizeof(Uint32));
 
   if (! ip.start_blank) {
     int i, j;
@@ -1102,10 +1115,10 @@ int main(int argc, char *argv[])
   rendering_done = SDL_CreateSemaphore(0);
   saving_done = SDL_CreateSemaphore(1);
 
-  SDL_Thread *render_thread_token = SDL_CreateThread(render_thread, NULL);
+  SDL_Thread *render_thread_token = SDL_CreateThread(render_thread, NULL, "render");
   SDL_Thread *save_thread_token = NULL;
   if (out_stream)
-    SDL_CreateThread(save_thread, NULL);
+    SDL_CreateThread(save_thread, NULL, "save");
 
   fftw_execute(plan_forward);
 
@@ -1788,7 +1801,7 @@ int main(int argc, char *argv[])
                   break;
 
                 case 13:
-                  SDL_WM_ToggleFullScreen(screen);
+                  SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
                   break;
 
                 case 'y':

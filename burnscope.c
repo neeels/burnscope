@@ -8,7 +8,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdlib.h>
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -28,6 +28,7 @@ typedef Uint32 pixel_t;
 typedef struct {
   Uint32 *colors;
   unsigned int len;
+  SDL_PixelFormat *format;
 } palette_t;
 
 typedef struct {
@@ -65,11 +66,10 @@ static void *malloc_check(size_t len) {
   return p;
 }
 
-void set_color(palette_t *palette, int i, float r, float g, float b,
-               SDL_PixelFormat *format) {
+void set_color(palette_t *palette, int i, float r, float g, float b) {
   if (i >= palette->len)
     return;
-  palette->colors[i] = SDL_MapRGB(format, r * 255, g * 255, b * 255);
+  palette->colors[i] = SDL_MapRGB(palette->format, r * 255, g * 255, b * 255);
 }
 
 /* Generates a color palette, setting palette->colors and palette->len.
@@ -85,12 +85,13 @@ void make_palette(palette_t *palette, int n_colors,
 
   palette->colors = malloc_check(n_colors * sizeof(Uint32));
   palette->len = n_colors;
+  palette->format = format;
 
 
   if (n_points < 1) {
     for (i = 0; i < palette->len; i++) {
       float val = (float)i / palette->len;
-      set_color(palette, i, val, val, val, format);
+      set_color(palette, i, val, val, val);
     }
     return;
   }
@@ -161,7 +162,7 @@ void make_palette(palette_t *palette, int n_colors,
       float g = rfade * p.g  +  fade * next_p->g;
       float b = rfade * p.b  +  fade * next_p->b;
 
-      set_color(palette, color_pos, r, g, b, format);
+      set_color(palette, color_pos, r, g, b);
     }
 
     p = *next_p;
@@ -300,21 +301,15 @@ void mirror_p(pixel_t *pixbuf, const int W, const int H) {
 }
 
 
-void render(SDL_Surface *screen, const int winW, const int winH,
+void render(Uint32 *winbuf, const int winW, const int winH,
             palette_t *palette, pixel_t *pixbuf, const int W, const int H,
             int multiply_pixels, int colorshift, FILE *out_stream, const char *png_out_path)
 {
-  // Lock surface if needed
-  if (SDL_MUSTLOCK(screen))
-    if (SDL_LockSurface(screen) < 0)
-      return;
-
   assert((W * multiply_pixels) == winW);
   assert((H * multiply_pixels) == winH);
 
   int x, y;
   int mx, my;
-  int pitch = screen->pitch / sizeof(Uint32) - winW;
 
   FILE * png_fp;
   png_structp png_ptr = NULL;
@@ -364,7 +359,7 @@ void render(SDL_Surface *screen, const int winW, const int winH,
     png_row_pointers = png_malloc (png_ptr, winH * sizeof (png_byte *));
   }
 
-  Uint32 *screenpos = (Uint32*)(screen->pixels);
+  Uint32 *winpos = winbuf;
   pixel_t *pixbufpos = pixbuf;
   int winy = 0;
   for (y = 0; y < H; y++) {
@@ -386,11 +381,11 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         Uint8 r, g, b;
 
         if (png_out_path)
-          SDL_GetRGB(raw, screen->format, &r, &g, &b);
+          SDL_GetRGB(raw, palette->format, &r, &g, &b);
 
         for (mx = 0; mx < multiply_pixels; mx++, winx++) {
-          *screenpos = raw;
-          screenpos ++;
+          *winpos = raw;
+          winpos ++;
 
           if (png_out_path) {
             *png_row++ = r;
@@ -400,7 +395,6 @@ void render(SDL_Surface *screen, const int winW, const int winH,
         }
         pixbufpos ++;
       }
-      screenpos += pitch;
     }
   }
 
@@ -412,21 +406,14 @@ void render(SDL_Surface *screen, const int winW, const int winH,
       l = W*H;
     }
     for (i = 0; i < l; i++) {
-      ((Uint32*)screen->pixels)[i] = palette->colors[i];
+      ((Uint32*)winbuf)[i] = palette->colors[i];
     }
   }
 #endif
 
   if (out_stream) {
-    fwrite(screen->pixels, sizeof(Uint32), winW * winH, out_stream);
+    fwrite(winbuf, sizeof(pixel_t), winW * winH, out_stream);
   }
-
-  // Unlock if needed
-  if (SDL_MUSTLOCK(screen))
-    SDL_UnlockSurface(screen);
-
-  // Tell SDL to update the whole screen
-  SDL_UpdateRect(screen, 0, 0, winW, winH);
 
   if (png_out_path) {
     png_init_io (png_ptr, png_fp);
@@ -655,23 +642,34 @@ int main(int argc, char *argv[])
   }
 
 
-  SDL_Surface *screen;
-
-  if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0 )
-  {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
     fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
     exit(1);
   }
 
-  screen = SDL_SetVideoMode(winW, winH, 32, SDL_SWSURFACE);
-  if ( screen == NULL )
-  {
+  SDL_Window *window;
+  window = SDL_CreateWindow("burnscope", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                            winW, winH, 0);
+
+  if (!window) {
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
 
-  SDL_WM_SetCaption("burnscope", "burnscope");
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
+  if (!renderer) {
+    fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
+    exit(1);
+  }
+
   SDL_ShowCursor(SDL_DISABLE);
+  SDL_PixelFormat *pixelformat = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+  SDL_Texture *texture = SDL_CreateTexture(renderer, pixelformat->format,
+                                           SDL_TEXTUREACCESS_STREAMING, winW, winH);
+  if (!texture) {
+    fprintf(stderr, "Cannot create texture\n");
+    exit(1);
+  }
 
 #if 1
 #define n_palette_points 11
@@ -701,10 +699,11 @@ int main(int argc, char *argv[])
   palette_t palette;
   make_palette(&palette, PALETTE_LEN,
                palette_points, n_palette_points,
-               screen->format);
+               pixelformat);
 
   pixel_t *buf1 = malloc_check(W * H * sizeof(pixel_t));
   pixel_t *buf2 = malloc_check(W * H * sizeof(pixel_t));
+  Uint32 *winbuf = malloc_check(winW * winH * sizeof(Uint32));
   bzero(buf1, W * H * sizeof(pixel_t));
   bzero(buf2, W * H * sizeof(pixel_t));
 
@@ -816,7 +815,14 @@ int main(int argc, char *argv[])
         snprintf(path, 999, "%s/out%05d.png", png_out_dir, frames_rendered);
         png_out_path = path;
       }
-      render(screen, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift, out_stream, png_out_path);
+      render(winbuf, winW, winH, &palette, pixbuf, W, H, multiply_pixels, colorshift, out_stream, png_out_path);
+
+      SDL_UpdateTexture(texture, NULL, winbuf, winW * sizeof(Uint32));
+
+      SDL_RenderClear(renderer);
+      SDL_RenderCopy(renderer, texture, NULL, NULL);
+      SDL_RenderPresent(renderer);
+
       frames_rendered ++;
     }
     else

@@ -1,4 +1,4 @@
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 #include <assert.h>
 
 #define PALETTE_LEN_BITS 12
@@ -7,6 +7,7 @@
 typedef struct {
   Uint32 *colors;
   unsigned int len;
+	SDL_PixelFormat *format;
 } palette_t;
 
 typedef struct {
@@ -171,11 +172,10 @@ palette_def_t *palette_defs[n_palettes] = {
 palette_t palettes[n_palettes];
 
 
-void set_color(palette_t *palette, int i, float r, float g, float b,
-               SDL_PixelFormat *format) {
+void set_color(palette_t *palette, int i, float r, float g, float b) {
   if (i >= palette->len)
     return;
-  palette->colors[i] = SDL_MapRGB(format, r * 255, g * 255, b * 255);
+  palette->colors[i] = SDL_MapRGB(palette->format, r * 255, g * 255, b * 255);
 }
 
 /* Generates a color palette, setting palette->colors and palette->len.
@@ -193,12 +193,12 @@ void make_palette(palette_t *palette, int n_colors,
 
   palette->colors = malloc_check(n_colors * sizeof(Uint32));
   palette->len = n_colors;
-
+	palette->format = format;
 
   if (n_points < 1) {
     for (i = 0; i < palette->len; i++) {
       float val = (float)i / palette->len;
-      set_color(palette, i, val, val, val, format);
+      set_color(palette, i, val, val, val);
     }
     return;
   }
@@ -269,7 +269,7 @@ void make_palette(palette_t *palette, int n_colors,
       float g = rfade * p.g  +  fade * next_p->g;
       float b = rfade * p.b  +  fade * next_p->b;
 
-      set_color(palette, color_pos, r, g, b, format);
+      set_color(palette, color_pos, r, g, b);
     }
 
     p = *next_p;
