@@ -1921,12 +1921,20 @@ int main(int argc, char *argv[])
             break;
 
 
+#define DO_JOY_DEBUG 1
+
+#if DO_JOY_DEBUG
+#define JOYMSG(fmt, args...) printf(fmt, ##args )
+#else
+#define JOYMSG(fmt, args...)
+#endif
 
           case SDL_JOYAXISMOTION:
             {
               float axis_val = event.jaxis.value;
               axis_val /= 32768;
               controller_state_t *ctrl = &controller[event.jaxis.which];
+              JOYMSG("%d axis %d val %f\n", event.jaxis.which, event.jaxis.axis, axis_val);
 
               // these axes select the joystick layers
               int l = ctrl->selected_layer;
@@ -2128,6 +2136,7 @@ int main(int argc, char *argv[])
             {
               controller_state_t *ctrl = &controller[event.jbutton.which];
               int l = ctrl->selected_layer;
+              JOYMSG("%d button %d down\n", event.jbutton.which, event.jbutton.button);
               switch (l) {
 
                 case 0: // layer
