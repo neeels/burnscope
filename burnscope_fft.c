@@ -1923,7 +1923,6 @@ int main(int argc, char *argv[])
 
 
           case SDL_JOYAXISMOTION:
-            if (event.jaxis.which < n_joysticks)
             {
               float axis_val = event.jaxis.value;
               axis_val /= 32768;
@@ -2126,7 +2125,6 @@ int main(int argc, char *argv[])
             break; // SDL_JOYAXISMOTION
 
           case SDL_JOYBUTTONDOWN:
-            if (event.jbutton.which < n_joysticks)
             {
               controller_state_t *ctrl = &controller[event.jbutton.which];
               int l = ctrl->selected_layer;
@@ -2268,7 +2266,6 @@ int main(int argc, char *argv[])
 
 
           case SDL_JOYBUTTONUP:
-            if (event.jbutton.which < n_joysticks)
             {
               controller_state_t *ctrl = &controller[event.jbutton.which];
               int l = ctrl->selected_layer;
