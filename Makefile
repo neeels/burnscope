@@ -1,5 +1,9 @@
 all: burnscope burnscope3 fftw3_test burnscope_fft
 
+.PHONY: clean
+clean:
+	rm -f burnscope burnscope3 fftw3_test burnscope_fft
+
 burnscope3: burnscope3.c
 	gcc -Wall -g burnscope3.c -o burnscope3 -lm -lSDL
 
