@@ -763,8 +763,10 @@ int main(int argc, char *argv[])
   ip.random_seed = time(NULL);
   ip.start_blank = false;
 
+  int divide_pixels = 1;
+
   while (1) {
-    c = getopt(argc, argv, "bha:f:g:m:p:r:u:i:o:O:P:");
+    c = getopt(argc, argv, "bha:d:f:g:m:p:r:u:i:o:O:P:F");
     if (c == -1)
       break;
 
@@ -787,6 +789,14 @@ int main(int argc, char *argv[])
             exit(-1);
           }
         }
+        break;
+
+      case 'd':
+        divide_pixels = atoi(optarg);
+        break;
+
+      case 'F':
+        fullscreen = true;
         break;
 
       case 'm':
@@ -859,11 +869,13 @@ int main(int argc, char *argv[])
 "\n"
 "  -g WxH   Set animation width and height in number of pixels.\n"
 "           Default is '-g %dx%d'.\n"
+"  -F       Start in full-screen mode.\n"
 "  -f fps   Set desired framerate to <fps> frames per second. The framerate\n"
 "           may slew if your system cannot calculate fast enough.\n"
 "           If zero, run as fast as possible. Default is %.1f.\n"
 "  -m N     Multiply each pixel N times in width and height, to give a larger\n"
 "           picture. This will also multiply the window size.\n"
+"  -d N     Same as -m, except keeping identical final -g dimensions.\n"
 "  -a W     Set apex radius, i.e. the blur distance. Default is %.3f.\n"
 "  -u N.n   Set underdampening factor (decimal). Default is %.3f.\n"
 "           Reduces normal blur dampening by this factor.\n"
@@ -918,6 +930,17 @@ int main(int argc, char *argv[])
   }
   else
     multiply_pixels = 1;
+
+  if (divide_pixels > 1) {
+    if ((winW % divide_pixels) || (winH % divide_pixels)) {
+      fprintf(stderr, "-d %d: both -g dimensions must be a multiple of -d\n",
+              divide_pixels);
+      exit(1);
+    }
+    multiply_pixels = divide_pixels;
+    W = winW / multiply_pixels;
+    H = winH / multiply_pixels;
+  }
 
   if ( (winW > maxpixels) || (winH > maxpixels) ) {
     fprintf(stderr, "pixel multiplication is too large: %dx%d times %d = %dx%d\n",
@@ -1036,6 +1059,9 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Unable to set %dx%d video: %s\n", winW, winH, SDL_GetError());
     exit(1);
   }
+
+  if (fullscreen)
+    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
 
   renderer = SDL_CreateRenderer(window, -1, 0);
   if (!renderer) {
