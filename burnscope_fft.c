@@ -1080,19 +1080,6 @@ int main(int argc, char *argv[])
 
   const int n_joysticks = SDL_NumJoysticks();
 
-  controller_state_t *controller = malloc(n_joysticks * sizeof(controller_state_t));
-  bzero(controller, n_joysticks * sizeof(controller_state_t));
-  {
-    int i;
-    for (i = 0; i < n_joysticks; i++) {
-      controller[i].last_axis_apex_r = 0;
-      controller[i].apex_r_clamp = false;
-      controller[i].clamp_button_held = false;
-      controller[i].last_axis_burn = 0;
-      controller[i].burn_clamp = false;
-    }
-  }
-
   printf("%d joysticks were found.\n", n_joysticks);
 
   SDL_Joystick **joysticks = NULL;
