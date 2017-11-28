@@ -765,6 +765,8 @@ int main(int argc, char *argv[])
 
   int divide_pixels = 1;
 
+  bool recording_parameters = false;
+
   while (1) {
     c = getopt(argc, argv, "bha:d:f:g:m:p:r:u:i:o:O:P:F");
     if (c == -1)
@@ -825,6 +827,7 @@ int main(int argc, char *argv[])
 
       case 'o':
         out_params_path = optarg;
+        recording_parameters = true;
         break;
 
       case 'i':
@@ -1942,14 +1945,21 @@ int main(int argc, char *argv[])
                   break;
 
                 case 6:
-                  do_back = true;
-                  do_rerecord_params = false;
+                  if (recording_parameters) {
+                    do_back = true;
+                    do_rerecord_params = false;
+                  }
                   break;
 
                 case 7:
-                  do_rerecord_params = ! do_rerecord_params;
-                  do_rerecord_params_overlay = do_rerecord_params;
-                  do_rerecord_params_overlay_started = do_rerecord_params_overlay;
+                  if (recording_parameters) {
+                    do_rerecord_params = ! do_rerecord_params;
+                    do_rerecord_params_overlay = do_rerecord_params;
+                    do_rerecord_params_overlay_started = do_rerecord_params_overlay;
+                  }
+                  else {
+                    running = false;
+                  }
                   break;
 
                 case 8:
