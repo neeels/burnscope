@@ -73,8 +73,8 @@ char *symmetry_name[SYMMETRY_KINDS] = {
   };
 
 
-int W = 1920 / 3;
-int H = 1080 / 3;
+int W = 1024;
+int H = 768;
 int min_W_H, max_W_H;
 pixel_t *pixbuf = NULL;
 int pixbuf_bytes = 0;
