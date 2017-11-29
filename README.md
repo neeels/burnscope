@@ -31,10 +31,10 @@ music video). See the -h option.
 
 Usage examples:
 
-    sudo apt-get install gcc libsdl1.2-dev libpng12-dev libfftw3-dev libsndfile1-dev
+    sudo apt-get install gcc libsdl2-dev libsdl2-image-dev libpng-dev libfftw3-dev libsndfile1-dev
     cd burnscope
     make
-    ./burnscope_fft -g 320x200 -m 2 -f 25
+    ./burnscope_fft -g 320x200 -m 2
     ./burnscope3 -g 320x200 -m 2 -p 70
 
 To find out all features, you'll have to read the source code:
@@ -44,7 +44,7 @@ To find out all features, you'll have to read the source code:
 * ...
 
 burnscope3 uses three independent burnscopes to feed the color channels r, g,
-and b. It's not as great as I had expected ;)
+and b. It's not as great as I had expected.
 
 Many enhancements come to mind. If you enjoy playing with this, I would be glad
 to hear about it!
