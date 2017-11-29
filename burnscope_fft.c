@@ -574,7 +574,7 @@ const int params_file_id = 0x23315;
 const int params_version = 2;
 
 init_params_t ip;
-params_t p = { 3.05, 0, .00407, 0., 0., false, false, true, false, false,
+params_t p = { 24.05, 0, .000407, 0., 0., false, false, false, false, false,
   false, false, symm_none, 23, 0, .006, -1, 0, 0, INT_MAX, INT_MAX, -1, 0.5, 0.5};
 
 typedef struct {
@@ -1093,7 +1093,7 @@ int main(int argc, char *argv[])
 
   float wavy = 0;
   bool do_print = true;
-  float wavy_speed = 1.2;
+  float wavy_speed = 3.;
   bool seed_key_down = false;
   double use_burn = 1.002;
 
